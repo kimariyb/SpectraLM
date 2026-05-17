@@ -289,47 +289,52 @@ def HygrogenToSpectra(data: dict, image_path: str = 'spectra_1H.png') -> plt.Fig
     y = _add_noise(y, snr=100.0, rng=rng)
     y = np.clip(y, -0.03, None)
 
-    # ── 绘图 ──
-    fig, ax = plt.subplots(figsize=(14, 5), dpi=150)
-    ax.fill_between(x, 0, y, alpha=0.12, color='#1e8449')
-    ax.plot(x, y, color='#1e8449', linewidth=0.85, zorder=3)
+    # ── 双子图布局：上谱线，下积分 ──
+    # 参考图风格：谱线与积分曲线在各自独立的行，积分行高约为谱线行的 1/4
+    fig, (ax_spec, ax_int) = plt.subplots(
+        2, 1, figsize=(14, 6), dpi=150,
+        gridspec_kw={'height_ratios': [4, 1], 'hspace': 0.0}
+    )
 
-    # 在每段峰顶标注质子数（红色，防重叠）
-    _style_axes(ax, freq_label, ppm_min, ppm_max, "¹H NMR", '#1e8449')
-    ax.set_ylim(-0.08, 1.55)
-    fig.canvas.draw()   # 触发渲染，使 get_window_extent 可用
 
-    renderer = fig.canvas.get_renderer()
-    placed = []   # 已放置的标签 bbox 列表（display coords）
 
-    # 按 shift_center 排序（从右到左，NMR 习惯）
-    sorted_labels = sorted(integral_data, key=lambda t: t[0], reverse=True)
+    # ── 谱线子图 ──
+    ax_spec.fill_between(x, 0, y, alpha=0.12, color='#1e8449')
+    ax_spec.plot(x, y, color='black', linewidth=0.8, zorder=3)
+    ax_spec.set_xlim(ppm_max, ppm_min)
+    ax_spec.set_ylim(-0.05, 1.25)
+    ax_spec.spines['top'].set_visible(False)
+    ax_spec.spines['right'].set_visible(False)
+    ax_spec.spines['bottom'].set_visible(False)
+    ax_spec.tick_params(axis='x', bottom=False, labelbottom=False)
+    ax_spec.tick_params(axis='y', left=False, labelleft=False)
+    ax_spec.set_title(f"¹H NMR  [{freq_label}, CDCl₃]",
+                      fontsize=12, fontweight='bold', pad=10)
 
-    for shift_center, shift_max, n_H in sorted_labels:
-        hw = max(abs(shift_max - shift_center) + 0.25, 0.25)
-        mask = (x >= shift_center - hw) & (x <= shift_center + hw)
-        local_max = float(y[mask].max()) if mask.any() else 0.05
-        label = f'{int(n_H)}H' if n_H == int(n_H) else f'{n_H}H'
+    # ── 积分子图（只显示数字）──
+    ax_int.set_xlim(ppm_max, ppm_min)
+    ax_int.set_ylim(0, 1)
+    ax_int.spines['top'].set_visible(False)
+    ax_int.spines['right'].set_visible(False)
+    ax_int.spines['left'].set_visible(False)
+    ax_int.tick_params(axis='y', left=False, labelleft=False)
+    ax_int.set_xlabel("Chemical Shift (ppm)", fontsize=11, labelpad=6)
+    ax_int.xaxis.set_major_locator(ticker.MultipleLocator(1))
+    ax_int.xaxis.set_minor_locator(ticker.MultipleLocator(0.2))
+    ax_int.tick_params(axis='x', direction='out', length=4)
 
-        # 初始 y 位置：峰顶上方
-        y_label = local_max + 0.04
-        step = 0.07   # 每次上移量
+    # 只显示数值，竖排居中
+    for shift_center, shift_max, n_H in integral_data:
+        x_mid = (shift_center + shift_max) / 2
+        label = f'{n_H:.2f}' if n_H != int(n_H) else f'{int(n_H):.2f}'
+        ax_int.text(x_mid, 0.5, label,
+                    ha='center', va='center', fontsize=8,
+                    color='black', rotation=90,
+                    fontfamily='monospace')
 
-        for _ in range(20):   # 最多尝试上移 20 次
-            txt = ax.text(shift_center, y_label, label,
-                          ha='center', va='bottom', fontsize=9,
-                          color='#c0392b', fontweight='bold')
-            bb = txt.get_window_extent(renderer=renderer)
-            # 检查与已放置标签是否重叠
-            overlap = any(bb.overlaps(p) for p in placed)
-            if not overlap:
-                placed.append(bb)
-                break
-            else:
-                txt.remove()
-                y_label += step
-    ax.xaxis.set_major_locator(ticker.MultipleLocator(1))
-    ax.xaxis.set_minor_locator(ticker.MultipleLocator(0.2))
+    # 共享 x 轴刻度
+    ax_spec.set_xlim(ppm_max, ppm_min)
+    ax_int.set_xlim(ppm_max, ppm_min)
 
     plt.tight_layout()
     fig.savefig(image_path, dpi=150, bbox_inches='tight')
