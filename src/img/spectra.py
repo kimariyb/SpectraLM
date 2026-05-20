@@ -13,6 +13,10 @@ import matplotlib.ticker as ticker
 import ast
 import re
 
+DPI = 100  # 标准高清DPI，不模糊
+WIDTH_PX = 1508
+HEIGHT_PX = 868
+
 
 # ─────────────────────────────────────────────────────────────────
 #  内部工具函数
@@ -47,21 +51,18 @@ def _parse_data_string(data_str: str):
     return ast.literal_eval(data_str)
 
 
-def _style_axes(ax, freq_label: str, ppm_min: float, ppm_max: float,
-                title: str, color: str):
+def _style_axes(ax, ppm_min: float, ppm_max: float):
     """统一坐标轴样式"""
     ax.set_xlim(ppm_max, ppm_min)          # NMR 惯例：从右到左
-    ax.set_xlabel("Chemical Shift (ppm)", fontsize=11, labelpad=6)
-    ax.set_ylabel("Intensity (a.u.)", fontsize=11, labelpad=6)
-    ax.set_title(f"{title}  [{freq_label}, CDCl₃]", fontsize=12, fontweight='bold', pad=10)
+    ax.set_xlabel("Chemical Shift (ppm)", fontsize=18, labelpad=6)
+    ax.set_ylim(-0.1, 1 / 0.75)   # ← 加这一行，峰顶在 75% 处
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
-    ax.tick_params(axis='x', direction='out', length=4)
+    ax.spines['left'].set_visible(False)
+    ax.tick_params(axis='x', direction='out', length=4, labelsize=14)
     ax.tick_params(axis='y', left=False, labelleft=False)
     ax.xaxis.set_major_locator(ticker.MultipleLocator(20 if ppm_max > 100 else 1))
     ax.xaxis.set_minor_locator(ticker.MultipleLocator(5 if ppm_max > 100 else 0.2))
-    ax.set_facecolor('#f9f9f9')
-    ax.plot([ppm_max, ppm_min], [0, 0], color='black', linewidth=0.6, zorder=0)
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -87,67 +88,40 @@ def CarbonToSpectra(data: dict, image_path: str = 'spectra_13C.png') -> plt.Figu
     matplotlib.figure.Figure
     """
     rng = np.random.default_rng(2024)
-
+ 
     # ── 解析数据 ──
     raw = _parse_data_string(data['data'])
-    freq_hz = float(re.search(r'[\d.]+', data['frequency']).group())  # MHz
-    freq_label = data['frequency']
-
+    # freq_hz = float(re.search(r'[\d.]+', data['frequency']).group())  # MHz
+    # freq_label = data['frequency']
+ 
     # ── 谱图参数 ──
-    ppm_min, ppm_max = -5.0, 210.0
+    ppm_min, ppm_max = -10, 220.0
     x = np.linspace(ppm_min, ppm_max, 120000)
     y = np.zeros_like(x)
-
+ 
     # 线宽（ppm）；13C 线宽较宽
-    lw_base = 1.2          # ppm，基础 Lorentzian 半高宽
+    lw_base = 0.1        # ppm，基础 Lorentzian 半高宽
     eta = 0.6              # Pseudo-Voigt 混合比
-
+ 
     for shift, coup_type, J_hz in raw:
-        # 计算裂分位置（ppm）
-        if coup_type is None or J_hz is None:
-            positions = [shift]
-            heights = [1.0]
-        elif coup_type == 'd':
-            delta = J_hz / (2 * freq_hz)   # Hz → ppm
-            positions = [shift - delta, shift + delta]
-            heights = [1.0, 1.0]
-        elif coup_type == 't':
-            delta = J_hz / (2 * freq_hz)
-            positions = [shift - delta, shift, shift + delta]
-            heights = [1.0, 2.0, 1.0]
-        elif coup_type == 'q':
-            delta = J_hz / (2 * freq_hz)
-            positions = [shift - 1.5*delta, shift - 0.5*delta,
-                         shift + 0.5*delta, shift + 1.5*delta]
-            heights = [1.0, 3.0, 3.0, 1.0]
-        else:
-            positions = [shift]
-            heights = [1.0]
-
-        # 每根峰略微随机展宽（模拟不均匀展宽）
+        # 13C 全部视为单峰，不考虑耦合裂分
         lw = lw_base * rng.uniform(0.85, 1.15)
-        for pos, h in zip(positions, heights):
-            y += h * _pseudo_voigt(x, pos, lw, eta)
+        y += _pseudo_voigt(x, shift, lw, eta)
 
     # 归一化 + 噪声
     y /= y.max()
-    y = _add_noise(y, snr=60.0, rng=rng)
+    y = _add_noise(y, snr=150.0, rng=rng)
     y = np.clip(y, -0.05, None)
 
     # ── 绘图 ──
-    fig, ax = plt.subplots(figsize=(14, 4), dpi=150)
-    ax.fill_between(x, 0, y, alpha=0.15, color='#1a5276')
-    ax.plot(x, y, color='#1a5276', linewidth=0.9, zorder=3)
-    _style_axes(ax, freq_label, ppm_min, ppm_max, "¹³C NMR", '#1a5276')
+    fig, ax = plt.subplots(figsize=(WIDTH_PX / DPI, HEIGHT_PX / DPI), dpi=DPI)
+    ax.plot(x, y, color='black', linewidth=1, zorder=3)
+    _style_axes(ax, ppm_min, ppm_max)
 
-    # 标注主要峰位
-    for shift, _, _ in raw:
-        if ppm_min < shift < ppm_max:
-            ax.axvline(shift, color='#e74c3c', linewidth=0.4,
-                       linestyle='--', alpha=0.5, zorder=2)
 
+    
     plt.tight_layout()
-    fig.savefig(image_path, dpi=150, bbox_inches='tight')
+    fig.savefig(image_path, dpi=DPI, bbox_inches='tight', pad_inches=0.0)
     print(f"[13C] 谱图已保存至 {image_path}")
     return fig
 
@@ -258,11 +232,11 @@ def HygrogenToSpectra(data: dict, image_path: str = 'spectra_1H.png') -> plt.Fig
     freq_label = data['frequency']
 
     # ── 谱图参数 ──
-    ppm_min, ppm_max = -0.5, 9.5
+    ppm_min, ppm_max = 0, 12
     x = np.linspace(ppm_min, ppm_max, 200000)
     y = np.zeros_like(x)
 
-    lw_base = 0.012    # ppm，1H 线型较窄
+    lw_base = 0.01    # ppm，1H 线型较窄
     eta = 0.55
 
     # 收集各峰的积分权重，用于后续绘制积分曲线
@@ -286,38 +260,33 @@ def HygrogenToSpectra(data: dict, image_path: str = 'spectra_1H.png') -> plt.Fig
     # 归一化 + 噪声
     y_max = y.max()
     y /= y_max
-    y = _add_noise(y, snr=100.0, rng=rng)
+    y = _add_noise(y, snr=500.0, rng=rng)
     y = np.clip(y, -0.03, None)
 
     # ── 双子图布局：上谱线，下积分 ──
     # 参考图风格：谱线与积分曲线在各自独立的行，积分行高约为谱线行的 1/4
     fig, (ax_spec, ax_int) = plt.subplots(
-        2, 1, figsize=(14, 6), dpi=150,
+        2, 1, figsize=(WIDTH_PX / DPI, HEIGHT_PX / DPI), dpi=DPI,
         gridspec_kw={'height_ratios': [4, 1], 'hspace': 0.0}
     )
 
 
 
     # ── 谱线子图 ──
-    ax_spec.fill_between(x, 0, y, alpha=0.12, color='#1e8449')
     ax_spec.plot(x, y, color='black', linewidth=0.8, zorder=3)
     ax_spec.set_xlim(ppm_max, ppm_min)
-    ax_spec.set_ylim(-0.05, 1.25)
     ax_spec.spines['top'].set_visible(False)
     ax_spec.spines['right'].set_visible(False)
     ax_spec.spines['bottom'].set_visible(False)
     ax_spec.tick_params(axis='x', bottom=False, labelbottom=False)
     ax_spec.tick_params(axis='y', left=False, labelleft=False)
-    ax_spec.set_title(f"¹H NMR  [{freq_label}, CDCl₃]",
-                      fontsize=12, fontweight='bold', pad=10)
-
+    
     # ── 积分子图（只显示数字）──
     ax_int.set_xlim(ppm_max, ppm_min)
     ax_int.set_ylim(0, 1)
     ax_int.spines['top'].set_visible(False)
     ax_int.spines['right'].set_visible(False)
     ax_int.spines['left'].set_visible(False)
-    ax_int.tick_params(axis='y', left=False, labelleft=False)
     ax_int.set_xlabel("Chemical Shift (ppm)", fontsize=11, labelpad=6)
     ax_int.xaxis.set_major_locator(ticker.MultipleLocator(1))
     ax_int.xaxis.set_minor_locator(ticker.MultipleLocator(0.2))
@@ -337,7 +306,7 @@ def HygrogenToSpectra(data: dict, image_path: str = 'spectra_1H.png') -> plt.Fig
     ax_int.set_xlim(ppm_max, ppm_min)
 
     plt.tight_layout()
-    fig.savefig(image_path, dpi=150, bbox_inches='tight')
+    fig.savefig(image_path, dpi=DPI, bbox_inches='tight')
     print(f"[1H] 谱图已保存至 {image_path}")
     return fig
 
