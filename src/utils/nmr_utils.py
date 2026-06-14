@@ -1,6 +1,21 @@
 from typing import Any
 
 
+def sample_smiles(sample: dict[str, Any]) -> str | None:
+    return (
+        sample.get("canonical_smiles")
+        or sample.get("canonical_SMILES")
+        or sample.get("SMILES")
+        or sample.get("smiles")
+    )
+
+
+def peak_count(sample: dict[str, Any], nucleus: str) -> int:
+    nmr = sample.get(nucleus) or {}
+    peaks = nmr.get("peaks", nmr.get("data", []))
+    return len(peaks or [])
+
+
 def sample_peaks(sample: dict[str, Any], nucleus: str) -> list[Any]:
     nmr = sample.get(nucleus, {})
     return nmr.get("peaks", nmr.get("data", [])) or []

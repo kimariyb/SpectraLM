@@ -4,13 +4,13 @@ from PIL import Image
 from torch.utils.data import Dataset
 
 try:
-    from .utils.io_utils import load_pickle_list
-    from .utils.nmr_utils import build_reasoning_target, build_structure_prompt, canonical_smiles, selfies
+    from ..utils.io_utils import load_pickle_list
+    from ..utils.nmr_utils import build_reasoning_target, build_structure_prompt, canonical_smiles, selfies
     from .spectra import CombineSpectra
 except ImportError:
     from utils.io_utils import load_pickle_list
     from utils.nmr_utils import build_reasoning_target, build_structure_prompt, canonical_smiles, selfies
-    from spectra import CombineSpectra
+    from data.spectra import CombineSpectra
 
 
 IGNORE_INDEX = -100

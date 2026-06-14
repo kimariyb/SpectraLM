@@ -216,7 +216,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
-
-/src/data/NMRexp_10to24_1_1004.csv
-/src/data/
 AGENTS.md
+
+# Datasets
+dataset/

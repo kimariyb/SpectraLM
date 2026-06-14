@@ -38,7 +38,7 @@ from PIL import Image
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 
 try:
-    from .utils.spec_utils import set_spectra_axes, add_noise, pseudo_voigt
+    from ..utils.spec_utils import set_spectra_axes, add_noise, pseudo_voigt
 except ImportError:
     from utils.spec_utils import set_spectra_axes, add_noise, pseudo_voigt
 

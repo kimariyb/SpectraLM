@@ -12,12 +12,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--train-dataset",
-        default="src/data/subsets/spectralm_500_100_pilot/train.pkl",
+        default="dataset/subsets/spectralm_500_100_pilot/train.pkl",
         help="Pickle dataset for training.",
     )
     parser.add_argument(
         "--eval-dataset",
-        default="src/data/subsets/spectralm_500_100_pilot/test.pkl",
+        default="dataset/subsets/spectralm_500_100_pilot/test.pkl",
         help="Pickle dataset for evaluation.",
     )
     parser.add_argument(
@@ -112,9 +112,9 @@ def main() -> None:
     from unsloth.trainer import UnslothVisionDataCollator
 
     try:
-        from .dataset import NMRexpDataset
+        from .data.datasets import NMRexpDataset
     except ImportError:
-        from dataset import NMRexpDataset
+        from data.datasets import NMRexpDataset
 
     print(f"Loading base model: {args.model_path}")
     model, tokenizer = FastVisionModel.from_pretrained(

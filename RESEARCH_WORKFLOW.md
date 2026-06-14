@@ -55,11 +55,11 @@ flowchart TB
 
 | 文件 | 作用 |
 | --- | --- |
-| `src/preprocess.py` | 合并同一分子的 `1H` 与 `13C` 数据，生成标准样本 |
-| `src/spectra.py` | 将离散峰表模拟为 combined NMR 谱图 |
-| `src/split_quality.py` | 生成 scaffold split 和数据质量报告 |
-| `src/sample_splits.py` | 从全量 split 中抽取代表性小样本 |
-| `src/dataset.py` | 构造多模态训练样本 |
+| `src/scripts/run_preprocess.py` | 合并同一分子的 `1H` 与 `13C` 数据，生成标准样本 |
+| `src/data/spectra.py` | 将离散峰表模拟为 combined NMR 谱图 |
+| `src/scripts/run_split.py` | 生成 scaffold split 和数据质量报告 |
+| `src/scripts/run_sample.py` | 从全量 split 中抽取代表性小样本 |
+| `src/data/datasets.py` | 构造多模态训练样本 |
 
 ## 阶段三：scaffold split 与代表性抽样
 
@@ -68,7 +68,7 @@ flowchart TB
 首轮 pilot 微调使用：
 
 ```text
-src/data/subsets/spectralm_500_100_pilot/
+dataset/subsets/spectralm_500_100_pilot/
 ```
 
 该子集包含：
@@ -117,8 +117,8 @@ Final canonical SMILES: ...
 ```bash
 python src/train.py \
   --model-path /mnt/data/kimariyb/models/Qwen3-VL-8B-Instruct \
-  --train-dataset src/data/subsets/spectralm_500_100_pilot/train.pkl \
-  --eval-dataset src/data/subsets/spectralm_500_100_pilot/test.pkl \
+  --train-dataset dataset/subsets/spectralm_500_100_pilot/train.pkl \
+  --eval-dataset dataset/subsets/spectralm_500_100_pilot/test.pkl \
   --output-dir outputs/spectralm-pilot-qwen3-vl-8b
 ```
 

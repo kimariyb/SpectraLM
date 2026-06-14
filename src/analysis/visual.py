@@ -19,7 +19,7 @@ solvents_h = []
 multiplicities = []  
 
 # 载入数据
-with open("./data/NMRexp_spectra_dataset.pkl", "rb") as f:
+with open("./dataset/NMRexp_spectra_dataset.pkl", "rb") as f:
     spectra_list = pickle.load(f)
 
 
