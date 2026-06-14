@@ -38,9 +38,9 @@ from PIL import Image
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 
 try:
-    from .utils import set_spectra_axes, add_noise, pseudo_voigt
+    from .utils.spec_utils import set_spectra_axes, add_noise, pseudo_voigt
 except ImportError:
-    from utils import set_spectra_axes, add_noise, pseudo_voigt
+    from utils.spec_utils import set_spectra_axes, add_noise, pseudo_voigt
 
 
 DPI = 100  # 标准高清DPI，不模糊

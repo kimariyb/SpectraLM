@@ -1,4 +1,5 @@
 import argparse
+import inspect
 import os
 
 
@@ -45,6 +46,63 @@ def configure_huggingface_env() -> None:
     os.environ.setdefault("HF_HUB_DOWNLOAD_RETRY", "20")
 
 
+def build_sft_config_kwargs(args: argparse.Namespace, config_cls) -> dict:
+    supported = set(inspect.signature(config_cls.__init__).parameters)
+    candidates = {
+        "output_dir": args.output_dir,
+        "per_device_train_batch_size": args.per_device_train_batch_size,
+        "gradient_accumulation_steps": args.gradient_accumulation_steps,
+        "learning_rate": args.learning_rate,
+        "num_train_epochs": args.num_train_epochs,
+        "logging_steps": args.logging_steps,
+        "save_steps": args.save_steps,
+        "eval_steps": args.eval_steps,
+        "bf16": True,
+        "remove_unused_columns": False,
+        "dataset_text_field": "",
+        "seed": args.seed,
+    }
+
+    if "max_length" in supported:
+        candidates["max_length"] = args.max_seq_length
+    elif "max_seq_length" in supported:
+        candidates["max_seq_length"] = args.max_seq_length
+
+    if "eval_strategy" in supported:
+        candidates["eval_strategy"] = "steps"
+    elif "evaluation_strategy" in supported:
+        candidates["evaluation_strategy"] = "steps"
+
+    return {key: value for key, value in candidates.items() if key in supported}
+
+
+def build_sft_trainer_kwargs(
+    trainer_cls,
+    *,
+    model,
+    tokenizer,
+    data_collator,
+    train_dataset,
+    eval_dataset,
+    training_args,
+) -> dict:
+    supported = set(inspect.signature(trainer_cls.__init__).parameters)
+    kwargs = {
+        "model": model,
+        "args": training_args,
+        "data_collator": data_collator,
+        "train_dataset": train_dataset,
+        "eval_dataset": eval_dataset,
+    }
+
+    if "processing_class" in supported:
+        kwargs["processing_class"] = tokenizer
+    elif "tokenizer" in supported:
+        kwargs["tokenizer"] = tokenizer
+
+    return {key: value for key, value in kwargs.items() if key in supported}
+
+
 def main() -> None:
     args = build_arg_parser().parse_args()
     configure_huggingface_env()
@@ -81,30 +139,18 @@ def main() -> None:
     train_dataset = NMRexpDataset(args.train_dataset, task_probs={"structure_reasoning": 1.0})
     eval_dataset = NMRexpDataset(args.eval_dataset, task_probs={"structure_reasoning": 1.0})
 
-    training_args = SFTConfig(
-        output_dir=args.output_dir,
-        max_seq_length=args.max_seq_length,
-        per_device_train_batch_size=args.per_device_train_batch_size,
-        gradient_accumulation_steps=args.gradient_accumulation_steps,
-        learning_rate=args.learning_rate,
-        num_train_epochs=args.num_train_epochs,
-        logging_steps=args.logging_steps,
-        save_steps=args.save_steps,
-        eval_steps=args.eval_steps,
-        eval_strategy="steps",
-        bf16=True,
-        remove_unused_columns=False,
-        dataset_text_field="",
-        seed=args.seed,
-    )
+    training_args = SFTConfig(**build_sft_config_kwargs(args, SFTConfig))
 
     trainer = SFTTrainer(
-        model=model,
-        tokenizer=tokenizer,
-        data_collator=UnslothVisionDataCollator(model, tokenizer),
-        train_dataset=train_dataset,
-        eval_dataset=eval_dataset,
-        args=training_args,
+        **build_sft_trainer_kwargs(
+            SFTTrainer,
+            model=model,
+            tokenizer=tokenizer,
+            data_collator=UnslothVisionDataCollator(model, tokenizer),
+            train_dataset=train_dataset,
+            eval_dataset=eval_dataset,
+            training_args=training_args,
+        )
     )
 
     trainer.train()

@@ -5,6 +5,7 @@ from src.sample_splits import (
     assign_complexity_bin,
     functional_group_labels,
     representative_sample,
+    selected_sample_csv_rows,
 )
 
 
@@ -110,6 +111,28 @@ class SampleSplitsTests(unittest.TestCase):
         )
 
         self.assertEqual([row["id"] for row in selected], ["a"])
+
+    def test_selected_sample_csv_rows_serializes_list_fields(self):
+        rows = selected_sample_csv_rows(
+            [
+                {
+                    "split": "train",
+                    "id": "a",
+                    "canonical_smiles": "CCO",
+                    "murcko_scaffold": "acyclic:CCO",
+                    "molecular_formula": "C2H6O",
+                    "functional_groups": ["alcohol", "ether"],
+                    "complexity_bin": "heavy_atoms:low",
+                    "heavy_atoms": 3,
+                    "mol_weight": 46.069,
+                    "h_peak_count": 2,
+                    "c_peak_count": 2,
+                }
+            ]
+        )
+
+        self.assertEqual(rows[0]["functional_groups"], "alcohol;ether")
+        self.assertEqual(rows[0]["mol_weight"], "46.0690")
 
 
 if __name__ == "__main__":

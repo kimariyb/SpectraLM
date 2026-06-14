@@ -3,7 +3,7 @@ import uuid
 import pickle
 from tqdm import tqdm
 
-from utils import canonicalize_smiles, smiles_to_selfies, safe_literal_eval, process_13c_peaks, process_1h_peaks
+from utils.spec_utils import canonicalize_smiles, smiles_to_selfies, safe_literal_eval, process_13c_peaks, process_1h_peaks
 
 
 def row_to_spectra(row):

@@ -1,7 +1,6 @@
 import argparse
 import csv
 import json
-import pickle
 import random
 import sys
 from collections import Counter, defaultdict
@@ -16,8 +15,10 @@ except ModuleNotFoundError:
     Descriptors = None
 
 try:
+    from .utils.io_utils import load_pickle_list, write_json, write_pickle, write_rows_csv
     from .split_quality import peak_count, sample_smiles
 except ImportError:
+    from utils.io_utils import load_pickle_list, write_json, write_pickle, write_rows_csv
     from split_quality import peak_count, sample_smiles
 
 
@@ -204,14 +205,6 @@ def representative_sample(
     return selected
 
 
-def load_pickle(path: Path) -> list[dict[str, Any]]:
-    with path.open("rb") as f:
-        data = pickle.load(f)
-    if not isinstance(data, list):
-        raise TypeError(f"Expected list from {path}, got {type(data).__name__}")
-    return data
-
-
 def load_split_csv(path: Path) -> dict[str, dict[str, str]]:
     by_id = {}
     with path.open(newline="", encoding="utf-8") as f:
@@ -318,48 +311,38 @@ def sample_report(rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def write_pickle(path: Path, rows: list[dict[str, Any]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("wb") as f:
-        pickle.dump(rows, f)
+SAMPLE_CSV_FIELDS = [
+    "split",
+    "id",
+    "canonical_smiles",
+    "murcko_scaffold",
+    "molecular_formula",
+    "functional_groups",
+    "complexity_bin",
+    "heavy_atoms",
+    "mol_weight",
+    "h_peak_count",
+    "c_peak_count",
+]
 
 
-def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(
-            f,
-            fieldnames=[
-                "split",
-                "id",
-                "canonical_smiles",
-                "murcko_scaffold",
-                "molecular_formula",
-                "functional_groups",
-                "complexity_bin",
-                "heavy_atoms",
-                "mol_weight",
-                "h_peak_count",
-                "c_peak_count",
-            ],
-        )
-        writer.writeheader()
-        for row in rows:
-            writer.writerow(
-                {
-                    "split": row["split"],
-                    "id": row.get("id", ""),
-                    "canonical_smiles": row.get("canonical_smiles", ""),
-                    "murcko_scaffold": row.get("murcko_scaffold", ""),
-                    "molecular_formula": row.get("molecular_formula", ""),
-                    "functional_groups": ";".join(row["functional_groups"]),
-                    "complexity_bin": row["complexity_bin"],
-                    "heavy_atoms": row["heavy_atoms"],
-                    "mol_weight": f"{row['mol_weight']:.4f}",
-                    "h_peak_count": row["h_peak_count"],
-                    "c_peak_count": row["c_peak_count"],
-                }
-            )
+def selected_sample_csv_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "split": row["split"],
+            "id": row.get("id", ""),
+            "canonical_smiles": row.get("canonical_smiles", ""),
+            "murcko_scaffold": row.get("murcko_scaffold", ""),
+            "molecular_formula": row.get("molecular_formula", ""),
+            "functional_groups": ";".join(row["functional_groups"]),
+            "complexity_bin": row["complexity_bin"],
+            "heavy_atoms": row["heavy_atoms"],
+            "mol_weight": f"{row['mol_weight']:.4f}",
+            "h_peak_count": row["h_peak_count"],
+            "c_peak_count": row["c_peak_count"],
+        }
+        for row in rows
+    ]
 
 
 def main() -> None:
@@ -390,7 +373,7 @@ def main() -> None:
 
     keep_ids = train_ids | test_ids
     print(f"Loading dataset and attaching {len(keep_ids):,} candidate samples...", file=sys.stderr, flush=True)
-    samples = load_pickle(Path(args.dataset))
+    samples = load_pickle_list(Path(args.dataset))
     rows = attach_split_metadata(samples, split_rows, keep_ids=keep_ids)
     print(f"Attached {len(rows):,} candidate samples.", file=sys.stderr, flush=True)
 
@@ -416,7 +399,7 @@ def main() -> None:
     out_dir = Path(args.out_dir)
     write_pickle(out_dir / "train.pkl", train)
     write_pickle(out_dir / "test.pkl", test)
-    write_csv(out_dir / "selected_samples.csv", train + test)
+    write_rows_csv(out_dir / "selected_samples.csv", selected_sample_csv_rows(train + test), SAMPLE_CSV_FIELDS)
 
     report = {
         "train": sample_report(train),
@@ -426,8 +409,7 @@ def main() -> None:
             & {row["murcko_scaffold"] for row in test}
         ),
     }
-    with (out_dir / "sample_report.json").open("w", encoding="utf-8") as f:
-        json.dump(report, f, ensure_ascii=False, indent=2)
+    write_json(out_dir / "sample_report.json", report)
 
     print(json.dumps(report, ensure_ascii=False, indent=2))
     print(f"Wrote {out_dir}")

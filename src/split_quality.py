@@ -1,12 +1,15 @@
 import argparse
-import csv
 import json
-import pickle
 import random
 import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
+
+try:
+    from .utils.io_utils import load_pickle_list, write_json, write_rows_csv
+except ImportError:
+    from utils.io_utils import load_pickle_list, write_json, write_rows_csv
 
 try:
     from rdkit import Chem
@@ -196,39 +199,23 @@ def build_quality_report(samples: list[dict[str, Any]]) -> dict[str, Any]:
     return report
 
 
-def load_pickle(path: Path) -> list[dict[str, Any]]:
-    with path.open("rb") as f:
-        data = pickle.load(f)
-    if not isinstance(data, list):
-        raise TypeError(f"Expected a list of samples, got {type(data).__name__}")
-    return data
+SPLIT_CSV_FIELDS = ["split", "id", "canonical_smiles", "murcko_scaffold", "molecular_formula"]
 
 
-def write_json(path: Path, payload: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
-
-
-def write_split_csv(path: Path, split: dict[str, list[dict[str, Any]]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(
-            f,
-            fieldnames=["split", "id", "canonical_smiles", "murcko_scaffold", "molecular_formula"],
-        )
-        writer.writeheader()
-        for name, rows in split.items():
-            for row in rows:
-                writer.writerow(
-                    {
-                        "split": name,
-                        "id": row.get("id", ""),
-                        "canonical_smiles": row.get("canonical_smiles", ""),
-                        "murcko_scaffold": row.get("murcko_scaffold", ""),
-                        "molecular_formula": row.get("molecular_formula", ""),
-                    }
-                )
+def split_csv_rows(split: dict[str, list[dict[str, Any]]]) -> list[dict[str, str]]:
+    rows = []
+    for name, split_rows in split.items():
+        for row in split_rows:
+            rows.append(
+                {
+                    "split": name,
+                    "id": row.get("id", ""),
+                    "canonical_smiles": row.get("canonical_smiles", ""),
+                    "murcko_scaffold": row.get("murcko_scaffold", ""),
+                    "molecular_formula": row.get("molecular_formula", ""),
+                }
+            )
+    return rows
 
 
 def split_summary(split: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
@@ -250,7 +237,7 @@ def main() -> None:
     parser.add_argument("--ratios", nargs=3, type=float, default=(0.8, 0.1, 0.1))
     args = parser.parse_args()
 
-    samples = load_pickle(Path(args.input))
+    samples = load_pickle_list(Path(args.input))
     valid_rows, quality = analyze_samples(samples)
     split = scaffold_split(valid_rows, ratios=tuple(args.ratios), seed=args.seed)
 
@@ -258,7 +245,7 @@ def main() -> None:
     quality["split_summary"] = split_summary(split)
 
     write_json(out_dir / "quality_report.json", quality)
-    write_split_csv(out_dir / "scaffold_split.csv", split)
+    write_rows_csv(out_dir / "scaffold_split.csv", split_csv_rows(split), SPLIT_CSV_FIELDS)
 
     print(json.dumps(quality["split_summary"], ensure_ascii=False, indent=2))
     print(f"Wrote {out_dir / 'quality_report.json'}")

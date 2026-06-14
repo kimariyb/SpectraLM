@@ -7,6 +7,7 @@ from src.split_quality import (
     molecule_formula,
     murcko_scaffold,
     scaffold_split,
+    split_csv_rows,
 )
 
 
@@ -61,6 +62,33 @@ class SplitQualityTests(unittest.TestCase):
         self.assertEqual(report["duplicate_canonical_smiles"], 1)
         self.assertEqual(report["missing_1h"], 1)
         self.assertEqual(report["missing_13c"], 1)
+
+    def test_split_csv_rows_formats_split_output(self):
+        rows = split_csv_rows(
+            {
+                "train": [
+                    {
+                        "id": "a",
+                        "canonical_smiles": "CCO",
+                        "murcko_scaffold": "acyclic:CCO",
+                        "molecular_formula": "C2H6O",
+                    }
+                ]
+            }
+        )
+
+        self.assertEqual(
+            rows,
+            [
+                {
+                    "split": "train",
+                    "id": "a",
+                    "canonical_smiles": "CCO",
+                    "murcko_scaffold": "acyclic:CCO",
+                    "molecular_formula": "C2H6O",
+                }
+            ],
+        )
 
 
 if __name__ == "__main__":

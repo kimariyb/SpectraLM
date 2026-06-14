@@ -1,13 +1,16 @@
 import random
-import pickle
 from io import BytesIO
 from PIL import Image
 from torch.utils.data import Dataset
 
 try:
-    from .spectra import CombineSpectra, HydrogenToSpectra, CarbonToSpectra
+    from .utils.io_utils import load_pickle_list
+    from .utils.nmr_utils import build_reasoning_target, build_structure_prompt, canonical_smiles, selfies
+    from .spectra import CombineSpectra
 except ImportError:
-    from spectra import CombineSpectra, HydrogenToSpectra, CarbonToSpectra
+    from utils.io_utils import load_pickle_list
+    from utils.nmr_utils import build_reasoning_target, build_structure_prompt, canonical_smiles, selfies
+    from spectra import CombineSpectra
 
 
 IGNORE_INDEX = -100
@@ -38,8 +41,7 @@ class NMRexpDataset(Dataset):
         task_probs=None,
     ):
         # load dataset
-        with open(dataset_path, "rb") as f:
-            self.samples = pickle.load(f)
+        self.samples = load_pickle_list(dataset_path)
 
         # task sampling
         if task_probs is None:
@@ -56,83 +58,8 @@ class NMRexpDataset(Dataset):
     def __len__(self):
         return len(self.samples)
 
-    def _peaks(self, sample, nucleus):
-        nmr = sample.get(nucleus, {})
-        return nmr.get("peaks", nmr.get("data", [])) or []
-
-    def _selfies(self, sample):
-        return sample.get("selfies") or sample.get("SELFIES") or ""
-
-    def _canonical_smiles(self, sample):
-        return (
-            sample.get("canonical_smiles")
-            or sample.get("canonical_SMILES")
-            or sample.get("SMILES")
-            or sample.get("smiles")
-            or ""
-        )
-
-    def format_1h_peak(self, peak):
-        shift = float(peak["shift"])
-        mult = peak.get("multiplicity", "s")
-        integration = peak.get("integration", 1)
-        J = peak.get("J", [])
-        integration_text = f"{integration:g}H" if isinstance(integration, (int, float)) else str(integration)
-        if J:
-            j_str = ", ".join([f"{float(j):.1f}" for j in J])
-            return f"{shift:.2f} ppm ({mult}, J={j_str} Hz, {integration_text})"
-        return f"{shift:.2f} ppm ({mult}, {integration_text})"
-
-    def format_13c_peak(self, peak):
-        shift = peak["shift"] if isinstance(peak, dict) else peak
-        if isinstance(shift, list):
-            return "/".join(f"{float(x):.1f}" for x in shift)
-        return f"{float(shift):.1f}"
-
     def build_structure_reasoning_prompt(self, sample):
-        prompt = random.choice(STRUCTURE_PROMPTS)
-        text = []
-        text.append(prompt)
-        text.append(
-            "Return a concise spectral reasoning process first, then provide Final SELFIES "
-            "and Final canonical SMILES."
-        )
-
-        # 1H peaks
-        h_nmr = sample.get("1H_NMR", {})
-        h_peaks = self._peaks(sample, "1H_NMR")
-        h_strings = []
-        for p in h_peaks[:30]:
-            h_strings.append(self.format_1h_peak(p))
-
-        text.append(
-            f"1H NMR metadata: frequency={h_nmr.get('frequency', 'unknown')}, "
-            f"solvent={h_nmr.get('solvent', 'unknown')}\n"
-            "1H NMR peak table:\n"
-            + "\n".join(h_strings)
-        )
-
-        # 13C peaks
-        c_nmr = sample.get("13C_NMR", {})
-        c_peaks = self._peaks(sample, "13C_NMR")
-        c_strings = [self.format_13c_peak(p) for p in c_peaks[:80]]
-        text.append(
-            f"13C NMR metadata: frequency={c_nmr.get('frequency', 'unknown')}, "
-            f"solvent={c_nmr.get('solvent', 'unknown')}\n"
-            "13C NMR peak table:\n"
-            + ", ".join(c_strings)
-        )
-
-        text.append(
-            "NMR rules to consider:\n"
-            "- 1H integration constrains the number of equivalent hydrogens.\n"
-            "- Multiplicity and J coupling suggest neighboring proton environments.\n"
-            "- 13C peak count approximates distinct carbon environments.\n"
-            "- Chemical shift regions suggest functional groups and hybridization.\n"
-            "- The final structure must be consistent with both 1H and 13C evidence."
-        )
-
-        return "\n\n".join(text)
+        return build_structure_prompt(sample, prompt=random.choice(STRUCTURE_PROMPTS))
 
     def build_structure_prompt(self, sample):
         return self.build_structure_reasoning_prompt(sample)
@@ -145,19 +72,16 @@ class NMRexpDataset(Dataset):
         return prompt
 
     def build_target(self, sample, task):
-        selfies = self._selfies(sample)
-        smiles = self._canonical_smiles(sample)
-
         if task == "structure_reasoning":
-            return self.build_reasoning_target(sample, selfies, smiles)
+            return self.build_reasoning_target(sample)
 
         # structure prediction
         if task == "structure":
-            return selfies or smiles
+            return selfies(sample) or canonical_smiles(sample)
 
         # reasoning
         elif task == "reasoning":
-            return self.build_reasoning_target(sample, selfies, smiles)
+            return self.build_reasoning_target(sample)
 
         # functional group
         elif task == "functional_group":
@@ -167,32 +91,10 @@ class NMRexpDataset(Dataset):
                 )
             return "Unknown"
 
-        return selfies or smiles
+        return selfies(sample) or canonical_smiles(sample)
 
-    def build_reasoning_target(self, sample, selfies, smiles):
-        h_peaks = self._peaks(sample, "1H_NMR")
-        c_peaks = self._peaks(sample, "13C_NMR")
-        fg = sample.get("functional_groups") or []
-        formula = sample.get("molecular_formula", "unknown")
-        h_total = sum(float(p.get("integration", 0)) for p in h_peaks if isinstance(p, dict))
-
-        lines = [
-            "Spectral reasoning:",
-            f"- The 1H NMR spectrum contains {len(h_peaks)} reported proton environments with total integration about {h_total:g}H.",
-            f"- The 13C NMR spectrum contains {len(c_peaks)} reported carbon environments.",
-        ]
-        if fg:
-            lines.append(f"- Functional-group evidence is consistent with: {', '.join(fg)}.")
-        lines.extend(
-            [
-                f"- The proposed molecular formula is {formula}.",
-                "- The final structure should satisfy the reported 1H integration, splitting patterns, and 13C environment count.",
-                "",
-                f"Final SELFIES: {selfies}",
-                f"Final canonical SMILES: {smiles}",
-            ]
-        )
-        return "\n".join(lines)
+    def build_reasoning_target(self, sample):
+        return build_reasoning_target(sample)
 
     def build_image(self, sample):
         image = CombineSpectra(
