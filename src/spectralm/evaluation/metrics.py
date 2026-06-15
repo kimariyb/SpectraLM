@@ -14,7 +14,7 @@ from rdkit.Chem import AllChem
 
 from spectralm.config import add_config_argument, load_config
 from spectralm.data.molecules import canonicalize_smiles, functional_group_labels, sample_smiles
-from spectralm.data.nmr import peak_count
+from spectralm.data.utils import peak_count
 from spectralm.io import load_pickle_list, write_json
 
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from spectralm.data.molecules import canonicalize_smiles, sample_selfies, sample_smiles
-from spectralm.data.nmr import format_13c_peak, format_1h_peak, sample_peaks
+from spectralm.data.utils import format_13c_peak, format_1h_peak, sample_peaks
 
 
 STRUCTURE_PROMPTS = [

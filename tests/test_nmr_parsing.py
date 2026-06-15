@@ -1,6 +1,6 @@
 """Tests for NMR peak parsing utilities."""
 
-from spectralm.data.nmr import normalize_multiplicity, parse_couplings, parse_frequency_mhz, process_1h_peaks
+from spectralm.data.utils import normalize_multiplicity, parse_couplings, parse_frequency_mhz, process_1h_peaks
 
 
 def test_parse_couplings_from_mixed_values() -> None:

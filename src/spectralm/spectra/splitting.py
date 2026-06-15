@@ -7,7 +7,7 @@ from typing import Any
 
 import numpy as np
 
-from spectralm.data.nmr import normalize_multiplicity, parse_couplings
+from spectralm.data.utils import normalize_multiplicity, parse_couplings
 
 MULTIPLET_SPLITS: dict[str, list[int]] = {
     "s": [],

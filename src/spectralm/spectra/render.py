@@ -16,7 +16,7 @@ import numpy as np
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from PIL import Image
 
-from spectralm.data.nmr import parse_frequency_mhz
+from spectralm.data.utils import parse_frequency_mhz
 from spectralm.io import write_json
 from spectralm.spectra.lineshape import add_noise, pseudo_voigt, set_spectra_axes
 from spectralm.spectra.splitting import multiplet_peaks

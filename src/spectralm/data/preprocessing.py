@@ -12,7 +12,7 @@ from tqdm import tqdm
 
 from spectralm.config import add_config_argument, load_config
 from spectralm.data.molecules import canonicalize_smiles, smiles_to_selfies
-from spectralm.data.nmr import process_13c_peaks, process_1h_peaks, safe_literal_eval
+from spectralm.data.utils import process_13c_peaks, process_1h_peaks, safe_literal_eval
 from spectralm.io import write_pickle
 
 
