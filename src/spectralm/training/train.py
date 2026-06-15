@@ -69,7 +69,98 @@ def configure_huggingface_env() -> None:
     os.environ.setdefault("HF_HUB_DOWNLOAD_RETRY", "20")
 
 
-def build_sft_config_kwargs(args: argparse.Namespace, config_cls) -> dict[str, Any]:
+def inner_tokenizer(processing_class: Any) -> Any:
+    """Return the tokenizer nested inside a processor when present.
+
+    Parameters
+    ----------
+    processing_class
+        Hugging Face tokenizer or processor object.
+
+    Returns
+    -------
+    Any
+        Tokenizer-like object used for text vocabulary lookup.
+    """
+    return getattr(processing_class, "tokenizer", processing_class)
+
+
+def token_exists(tokenizer: Any, token: str | None) -> bool:
+    """Check whether a token exists in a tokenizer vocabulary.
+
+    Parameters
+    ----------
+    tokenizer
+        Tokenizer-like object.
+    token
+        Token string to check.
+
+    Returns
+    -------
+    bool
+        ``True`` when the token can be resolved to a vocabulary id.
+    """
+    if not token:
+        return False
+    if hasattr(tokenizer, "get_vocab"):
+        try:
+            return token in tokenizer.get_vocab()
+        except Exception:
+            pass
+    if hasattr(tokenizer, "convert_tokens_to_ids"):
+        try:
+            token_id = tokenizer.convert_tokens_to_ids(token)
+        except Exception:
+            return False
+        unknown_id = getattr(tokenizer, "unk_token_id", None)
+        return token_id is not None and token_id != unknown_id
+    return True
+
+
+def resolve_eos_token(processing_class: Any) -> str | None:
+    """Resolve an EOS token that is valid for a processor or tokenizer.
+
+    Parameters
+    ----------
+    processing_class
+        Hugging Face tokenizer or multimodal processor.
+
+    Returns
+    -------
+    str | None
+        EOS token that exists in the vocabulary, or ``None`` if unavailable.
+    """
+    tokenizer = inner_tokenizer(processing_class)
+    candidates = [
+        getattr(tokenizer, "eos_token", None),
+        getattr(processing_class, "eos_token", None),
+        "<|im_end|>",
+        "<|endoftext|>",
+    ]
+    for token in candidates:
+        if token_exists(tokenizer, token):
+            return token
+    return None
+
+
+def ensure_padding_token(processing_class: Any) -> None:
+    """Ensure tokenizer padding falls back to EOS when padding is undefined.
+
+    Parameters
+    ----------
+    processing_class
+        Hugging Face tokenizer or multimodal processor.
+    """
+    tokenizer = inner_tokenizer(processing_class)
+    if getattr(tokenizer, "pad_token", None) is None and getattr(tokenizer, "eos_token", None) is not None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+
+def build_sft_config_kwargs(
+    args: argparse.Namespace,
+    config_cls,
+    processing_class: Any | None = None,
+) -> dict[str, Any]:
     """Build TRL ``SFTConfig`` kwargs compatible with installed versions.
 
     Parameters
@@ -78,6 +169,9 @@ def build_sft_config_kwargs(args: argparse.Namespace, config_cls) -> dict[str, A
         Resolved training arguments.
     config_cls
         TRL SFT configuration class.
+    processing_class
+        Optional Hugging Face tokenizer or multimodal processor used to resolve
+        version-specific token settings.
 
     Returns
     -------
@@ -107,6 +201,10 @@ def build_sft_config_kwargs(args: argparse.Namespace, config_cls) -> dict[str, A
         candidates["eval_strategy"] = "steps"
     elif "evaluation_strategy" in supported:
         candidates["evaluation_strategy"] = "steps"
+    if processing_class is not None and "eos_token" in supported:
+        eos_token = resolve_eos_token(processing_class)
+        if eos_token is not None:
+            candidates["eos_token"] = eos_token
     return {key: value for key, value in candidates.items() if key in supported}
 
 
@@ -213,6 +311,7 @@ def main() -> None:
         args.model_path,
         use_gradient_checkpointing="unsloth",
     )
+    ensure_padding_token(tokenizer)
     print("Configuring LoRA adapter...")
     model = FastVisionModel.get_peft_model(
         model,
@@ -228,7 +327,7 @@ def main() -> None:
     )
     train_dataset = NmrReasoningDataset(args.train_dataset, task_probs={"structure_reasoning": 1.0})
     eval_dataset = NmrReasoningDataset(args.eval_dataset, task_probs={"structure_reasoning": 1.0})
-    training_args = SFTConfig(**build_sft_config_kwargs(args, SFTConfig))
+    training_args = SFTConfig(**build_sft_config_kwargs(args, SFTConfig, tokenizer))
     trainer = SFTTrainer(
         **build_sft_trainer_kwargs(
             SFTTrainer,
