@@ -1,529 +1,413 @@
-"""Representative subset sampling for small SpectraLM pilot runs."""
+"""Butina cluster representative subset construction for SpectraLM."""
 
 from __future__ import annotations
 
 import argparse
-import csv
 import json
 import random
-import sys
-from collections import Counter, defaultdict
+from collections import Counter
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
 from spectralm.config import add_config_argument, load_config
-from spectralm.data.molecules import (
-    functional_group_labels,
-    heavy_atom_count,
-    molecular_weight,
-    ring_count,
-    sample_smiles,
-)
-from spectralm.data.nmr import peak_count
+from spectralm.data.clustering import cluster_samples
+from spectralm.data.features import build_sample_features, save_feature_outputs
+from spectralm.data.molecules import functional_group_labels, murcko_scaffold, sample_smiles
 from spectralm.io import load_pickle_list, write_json, write_pickle, write_rows_csv
 
 
-def bin_value(value: int | float, low: int | float, high: int | float) -> str:
-    """Assign a numeric value to a coarse low/mid/high bin.
+SELECTED_FIELDS = [
+    "split",
+    "id",
+    "cluster",
+    "canonical_smiles",
+    "murcko_scaffold",
+    "functional_groups",
+]
+
+
+@dataclass
+class ClusterSelection:
+    """Container for Butina representative sampling outputs.
 
     Parameters
     ----------
-    value
-        Numeric value to bin.
-    low
-        Upper bound for the low bin.
-    high
-        Upper bound for the mid bin.
-
-    Returns
-    -------
-    str
-        ``low``, ``mid``, or ``high``.
+    train
+        Selected training samples.
+    test
+        Selected test samples.
+    report
+        Sampling report.
+    selected_rows
+        CSV-ready selected metadata rows.
     """
-    if value <= low:
-        return "low"
-    if value <= high:
-        return "mid"
-    return "high"
+
+    train: list[dict[str, Any]]
+    test: list[dict[str, Any]]
+    report: dict[str, Any]
+    selected_rows: list[dict[str, Any]]
 
 
-def assign_complexity_bin(row: dict[str, Any]) -> str:
-    """Assign a molecule and spectrum complexity bin.
-
-    Parameters
-    ----------
-    row
-        Descriptor-enriched sample row.
-
-    Returns
-    -------
-    str
-        Composite complexity label.
-    """
-    smiles = row.get("canonical_smiles") or sample_smiles(row)
-    return "|".join(
-        [
-            f"heavy_atoms:{bin_value(heavy_atom_count(smiles), 20, 40)}",
-            f"rings:{bin_value(ring_count(smiles), 0, 2)}",
-            f"h_peaks:{bin_value(peak_count(row, '1H_NMR'), 6, 14)}",
-            f"c_peaks:{bin_value(peak_count(row, '13C_NMR'), 10, 25)}",
-        ]
-    )
-
-
-def enrich_row(row: dict[str, Any]) -> dict[str, Any]:
-    """Attach sampling metadata to a row.
+def row_quality_score(row: dict[str, Any]) -> tuple[int, int]:
+    """Score a structure row by coarse chemical annotation richness.
 
     Parameters
     ----------
     row
-        Sample row with split metadata.
+        Feature metadata row.
 
     Returns
     -------
-    dict[str, Any]
-        Enriched row.
+    tuple[int, int]
+        Higher-is-better quality score.
     """
-    out = dict(row)
-    smiles = out.get("canonical_smiles") or sample_smiles(out)
-    out["functional_groups"] = functional_group_labels(smiles)
-    out["complexity_bin"] = assign_complexity_bin(out)
-    out["heavy_atoms"] = heavy_atom_count(smiles)
-    out["mol_weight"] = molecular_weight(smiles)
-    out["h_peak_count"] = peak_count(out, "1H_NMR")
-    out["c_peak_count"] = peak_count(out, "13C_NMR")
-    return out
+    groups = row.get("functional_groups", [])
+    useful_groups = [group for group in groups if group not in {"invalid", "none_detected"}]
+    return (len(useful_groups), len(row.get("canonical_smiles", "")))
 
 
-def coverage_gain(row: dict[str, Any], covered: Counter) -> int:
-    """Measure how many new coverage keys a row contributes.
-
-    Parameters
-    ----------
-    row
-        Enriched sample row.
-    covered
-        Counter of already covered bins, functional groups, and scaffolds.
-
-    Returns
-    -------
-    int
-        Count of newly covered keys.
-    """
-    keys = [f"complexity:{row['complexity_bin']}", f"scaffold:{row['murcko_scaffold']}"]
-    keys.extend(f"fg:{label}" for label in row["functional_groups"])
-    return sum(1 for key in keys if covered[key] == 0)
-
-
-def representative_sample(
-    rows: list[dict[str, Any]],
-    split_name: str,
-    target_size: int,
-    max_per_scaffold: int = 1,
-    max_heavy_atoms: int | None = None,
-    max_selfies_length: int | None = None,
-    seed: int = 3407,
-) -> list[dict[str, Any]]:
-    """Select a representative sample subset from one split.
-
-    Parameters
-    ----------
-    rows
-        Candidate rows with split metadata.
-    split_name
-        Split to sample from.
-    target_size
-        Desired number of rows.
-    max_per_scaffold
-        Maximum rows per scaffold.
-    max_heavy_atoms
-        Optional heavy atom upper bound.
-    max_selfies_length
-        Optional SELFIES length upper bound.
-    seed
-        Random seed.
-
-    Returns
-    -------
-    list[dict[str, Any]]
-        Selected rows.
-    """
-    rng = random.Random(seed)
-    candidates = []
-    for row in rows:
-        if row.get("split") != split_name:
-            continue
-        enriched = enrich_row(row)
-        if max_heavy_atoms is not None and enriched["heavy_atoms"] > max_heavy_atoms:
-            continue
-        if max_selfies_length is not None and len(enriched.get("selfies", "")) > max_selfies_length:
-            continue
-        candidates.append(enriched)
-    rng.shuffle(candidates)
-    selected = []
-    covered = Counter()
-    scaffold_counts = Counter()
-    molecule_seen = set()
-    by_bin: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for row in candidates:
-        by_bin[row["complexity_bin"]].append(row)
-    bin_names = list(by_bin)
-    rng.shuffle(bin_names)
-    while by_bin and len(selected) < target_size:
-        progressed = False
-        for bin_name in list(bin_names):
-            bucket = by_bin.get(bin_name, [])
-            if not bucket:
-                by_bin.pop(bin_name, None)
-                if bin_name in bin_names:
-                    bin_names.remove(bin_name)
-                continue
-            best_idx = None
-            best_score = None
-            for idx, row in enumerate(bucket):
-                scaffold = row["murcko_scaffold"]
-                smiles = row.get("canonical_smiles")
-                if scaffold_counts[scaffold] >= max_per_scaffold or smiles in molecule_seen:
-                    continue
-                score = (
-                    coverage_gain(row, covered),
-                    len(row["functional_groups"]),
-                    row["h_peak_count"] + row["c_peak_count"],
-                )
-                if best_score is None or score > best_score:
-                    best_score = score
-                    best_idx = idx
-            if best_idx is None:
-                by_bin.pop(bin_name, None)
-                if bin_name in bin_names:
-                    bin_names.remove(bin_name)
-                continue
-            row = bucket.pop(best_idx)
-            selected.append(row)
-            scaffold_counts[row["murcko_scaffold"]] += 1
-            molecule_seen.add(row.get("canonical_smiles"))
-            covered[f"complexity:{row['complexity_bin']}"] += 1
-            covered[f"scaffold:{row['murcko_scaffold']}"] += 1
-            for label in row["functional_groups"]:
-                covered[f"fg:{label}"] += 1
-            progressed = True
-            if len(selected) >= target_size:
-                break
-        if not progressed:
-            break
-    return selected
-
-
-def load_split_csv(path: Path) -> dict[str, dict[str, str]]:
-    """Load scaffold split metadata by sample ID.
-
-    Parameters
-    ----------
-    path
-        Split CSV path.
-
-    Returns
-    -------
-    dict[str, dict[str, str]]
-        Split rows keyed by sample ID.
-    """
-    by_id = {}
-    with path.open(newline="", encoding="utf-8") as handle:
-        for row in csv.DictReader(handle):
-            by_id[row["id"]] = row
-    return by_id
-
-
-def attach_split_metadata(
+def candidate_rows(
     samples: list[dict[str, Any]],
-    split_rows: dict[str, dict[str, str]],
-    keep_ids: set[str] | None = None,
+    feature_rows: list[dict[str, Any]],
+    labels: np.ndarray,
 ) -> list[dict[str, Any]]:
-    """Attach split CSV metadata to sample dictionaries.
+    """Join samples, feature metadata, and Butina labels.
 
     Parameters
     ----------
     samples
-        Full sample list.
-    split_rows
-        Split metadata keyed by sample ID.
-    keep_ids
-        Optional sample IDs to keep.
+        Original samples.
+    feature_rows
+        Feature metadata rows.
+    labels
+        Butina cluster labels.
 
     Returns
     -------
     list[dict[str, Any]]
-        Rows with split metadata.
+        Candidate rows with sample payloads.
     """
-    rows = []
-    for sample in samples:
-        sample_id = sample.get("id")
-        if keep_ids is not None and sample_id not in keep_ids:
+    sample_by_id = {sample.get("id"): sample for sample in samples}
+    candidates = []
+    for idx, row in enumerate(feature_rows):
+        sample = sample_by_id.get(row.get("id"))
+        if sample is None:
             continue
-        split_row = split_rows.get(sample_id)
-        if not split_row:
-            continue
-        row = dict(sample)
-        row.update(
-            {
-                "split": split_row["split"],
-                "canonical_smiles": split_row["canonical_smiles"],
-                "murcko_scaffold": split_row["murcko_scaffold"],
-                "molecular_formula": split_row["molecular_formula"],
-            }
-        )
-        rows.append(row)
-    return rows
+        candidates.append({"sample": sample, "row": row, "cluster": int(labels[idx])})
+    return candidates
 
 
-def preselect_split_ids(
-    split_rows: dict[str, dict[str, str]],
-    split_name: str,
-    pool_size: int,
-    max_per_scaffold: int,
-    seed: int,
-) -> set[str]:
-    """Preselect candidate IDs without loading the full pickle payload.
+def sort_candidates(candidates: list[dict[str, Any]], seed: int) -> list[dict[str, Any]]:
+    """Sort candidates by Butina cluster coverage and structure richness.
 
     Parameters
     ----------
-    split_rows
-        Split metadata keyed by sample ID.
-    split_name
-        Split to sample from.
-    pool_size
-        Maximum number of candidate IDs.
-    max_per_scaffold
-        Maximum rows per scaffold.
+    candidates
+        Candidate rows.
     seed
-        Random seed.
+        Random seed used for deterministic tie-breaking.
 
     Returns
     -------
-    set[str]
-        Candidate sample IDs.
+    list[dict[str, Any]]
+        Sorted candidates.
     """
     rng = random.Random(seed)
-    rows = [row for row in split_rows.values() if row.get("split") == split_name]
-    rng.shuffle(rows)
-    selected = []
-    scaffold_counts = Counter()
-    molecule_seen = set()
-    covered_fg = set()
-    for row in rows:
-        smiles = row.get("canonical_smiles")
-        scaffold = row.get("murcko_scaffold")
-        if not smiles or not scaffold:
-            continue
-        if scaffold_counts[scaffold] >= max_per_scaffold or smiles in molecule_seen:
-            continue
-        functional_groups = functional_group_labels(smiles)
-        if set(functional_groups).issubset(covered_fg):
-            continue
-        selected.append(row)
-        scaffold_counts[scaffold] += 1
-        molecule_seen.add(smiles)
-        covered_fg.update(functional_groups)
-        if len(selected) >= pool_size:
-            return {item["id"] for item in selected}
-    for row in rows:
-        if len(selected) >= pool_size:
-            break
-        smiles = row.get("canonical_smiles")
-        scaffold = row.get("murcko_scaffold")
-        if not smiles or not scaffold:
-            continue
-        if scaffold_counts[scaffold] >= max_per_scaffold or smiles in molecule_seen:
-            continue
-        selected.append(row)
-        scaffold_counts[scaffold] += 1
-        molecule_seen.add(smiles)
-    return {row["id"] for row in selected}
+    decorated = [(rng.random(), item) for item in candidates]
+    cluster_counts = Counter(item["cluster"] for item in candidates)
+    return [
+        item
+        for _, item in sorted(
+            decorated,
+            key=lambda pair: (
+                -cluster_counts[pair[1]["cluster"]],
+                pair[1]["cluster"],
+                tuple(-part for part in row_quality_score(pair[1]["row"])),
+                pair[0],
+            ),
+        )
+    ]
 
 
-def sample_report(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    """Summarize selected sample coverage.
+def select_one_split(
+    candidates: list[dict[str, Any]],
+    target_size: int,
+    max_per_scaffold: int,
+    blocked_scaffolds: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Select representatives for one split.
 
     Parameters
     ----------
-    rows
-        Selected rows.
+    candidates
+        Sorted candidate rows.
+    target_size
+        Desired split size.
+    max_per_scaffold
+        Maximum samples per scaffold.
+    blocked_scaffolds
+        Scaffolds that cannot be selected.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        Selected candidate rows.
+    """
+    blocked = blocked_scaffolds or set()
+    selected = []
+    scaffold_counts = Counter()
+    seen_molecules = set()
+    seen_clusters = set()
+    for pass_name in ("new_cluster", "fill"):
+        for item in candidates:
+            if len(selected) >= target_size:
+                return selected
+            row = item["row"]
+            scaffold = row.get("murcko_scaffold", "")
+            smiles = row.get("canonical_smiles", "")
+            if scaffold in blocked or scaffold_counts[scaffold] >= max_per_scaffold or smiles in seen_molecules:
+                continue
+            if pass_name == "new_cluster" and item["cluster"] in seen_clusters:
+                continue
+            selected.append(item)
+            scaffold_counts[scaffold] += 1
+            seen_molecules.add(smiles)
+            seen_clusters.add(item["cluster"])
+    return selected
+
+
+def materialize_samples(items: list[dict[str, Any]], split_name: str) -> list[dict[str, Any]]:
+    """Convert selected candidates to sample dictionaries.
+
+    Parameters
+    ----------
+    items
+        Selected candidate rows.
+    split_name
+        Split name to assign.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        Selected sample dictionaries.
+    """
+    output = []
+    for item in items:
+        row = item["row"]
+        sample = dict(item["sample"])
+        sample["split"] = split_name
+        sample["cluster"] = item["cluster"]
+        sample["canonical_smiles"] = row.get("canonical_smiles", sample.get("canonical_smiles", ""))
+        sample["murcko_scaffold"] = row.get("murcko_scaffold") or murcko_scaffold(sample_smiles(sample))
+        sample["functional_groups"] = row.get("functional_groups") or functional_group_labels(sample_smiles(sample))
+        output.append(sample)
+    return output
+
+
+def selected_csv_rows(items: list[dict[str, Any]], split_name: str) -> list[dict[str, Any]]:
+    """Convert selected candidate items to CSV rows.
+
+    Parameters
+    ----------
+    items
+        Selected candidate rows.
+    split_name
+        Split name.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        CSV-ready rows.
+    """
+    rows = []
+    for item in items:
+        row = item["row"]
+        rows.append(
+            {
+                "split": split_name,
+                "id": row.get("id", ""),
+                "cluster": item["cluster"],
+                "canonical_smiles": row.get("canonical_smiles", ""),
+                "murcko_scaffold": row.get("murcko_scaffold", ""),
+                "functional_groups": ";".join(row.get("functional_groups", [])),
+            }
+        )
+    return rows
+
+
+def split_report(train: list[dict[str, Any]], test: list[dict[str, Any]]) -> dict[str, Any]:
+    """Build a report for Butina representative subsets.
+
+    Parameters
+    ----------
+    train
+        Training samples.
+    test
+        Test samples.
 
     Returns
     -------
     dict[str, Any]
-        Summary statistics.
+        Sampling report.
     """
-    fg_counts = Counter()
-    complexity_counts = Counter()
-    scaffold_counts = Counter()
-    for row in rows:
-        fg_counts.update(row["functional_groups"])
-        complexity_counts[row["complexity_bin"]] += 1
-        scaffold_counts[row["murcko_scaffold"]] += 1
+    train_scaffolds = {row.get("murcko_scaffold") for row in train}
+    test_scaffolds = {row.get("murcko_scaffold") for row in test}
     return {
-        "samples": len(rows),
-        "unique_molecules": len({row.get("canonical_smiles") for row in rows}),
-        "unique_scaffolds": len(scaffold_counts),
-        "max_per_scaffold": max(scaffold_counts.values()) if scaffold_counts else 0,
-        "functional_groups": fg_counts.most_common(),
-        "complexity_bins": complexity_counts.most_common(),
-        "avg_1h_peak_count": sum(row["h_peak_count"] for row in rows) / len(rows) if rows else 0,
-        "avg_13c_peak_count": sum(row["c_peak_count"] for row in rows) / len(rows) if rows else 0,
-        "avg_heavy_atoms": sum(row["heavy_atoms"] for row in rows) / len(rows) if rows else 0,
-        "avg_mol_weight": sum(row["mol_weight"] for row in rows) / len(rows) if rows else 0,
+        "train": {
+            "samples": len(train),
+            "unique_scaffolds": len(train_scaffolds),
+            "unique_clusters": len({row.get("cluster") for row in train}),
+        },
+        "test": {
+            "samples": len(test),
+            "unique_scaffolds": len(test_scaffolds),
+            "unique_clusters": len({row.get("cluster") for row in test}),
+        },
+        "scaffold_overlap_train_test": len(train_scaffolds & test_scaffolds),
     }
 
 
-SAMPLE_CSV_FIELDS = [
-    "split",
-    "id",
-    "canonical_smiles",
-    "murcko_scaffold",
-    "molecular_formula",
-    "functional_groups",
-    "complexity_bin",
-    "heavy_atoms",
-    "mol_weight",
-    "h_peak_count",
-    "c_peak_count",
-]
-
-
-def selected_sample_csv_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Convert selected rows to CSV row dictionaries.
+def select_cluster_representatives(
+    samples: list[dict[str, Any]],
+    feature_rows: list[dict[str, Any]],
+    labels: np.ndarray,
+    fingerprints: np.ndarray,
+    config: dict[str, Any] | None = None,
+) -> ClusterSelection:
+    """Select train and test representatives from Butina clusters.
 
     Parameters
     ----------
-    rows
-        Selected sample rows.
+    samples
+        Original samples.
+    feature_rows
+        Feature metadata rows matching ``fingerprints``.
+    labels
+        Butina cluster labels matching ``fingerprints``.
+    fingerprints
+        Morgan fingerprint matrix. Included to keep the public API explicit.
+    config
+        Selection configuration.
 
     Returns
     -------
-    list[dict[str, Any]]
-        CSV-ready row dictionaries.
+    ClusterSelection
+        Selected splits and report.
     """
-    return [
+    _ = fingerprints
+    cfg = config or {}
+    train_size = int(cfg.get("train_size", 1000))
+    test_size = int(cfg.get("test_size", 300))
+    max_per_scaffold = int(cfg.get("max_per_scaffold", 1))
+    seed = int(cfg.get("seed", 3407))
+    candidates = sort_candidates(candidate_rows(samples, feature_rows, labels), seed)
+    train_items = select_one_split(candidates, train_size, max_per_scaffold)
+    train_scaffolds = {item["row"].get("murcko_scaffold", "") for item in train_items}
+    remaining = [item for item in candidates if item not in train_items]
+    test_items = select_one_split(remaining, test_size, max_per_scaffold, blocked_scaffolds=train_scaffolds)
+    train = materialize_samples(train_items, "train")
+    test = materialize_samples(test_items, "test")
+    report = split_report(train, test)
+    report.update(
         {
-            "split": row["split"],
-            "id": row.get("id", ""),
-            "canonical_smiles": row.get("canonical_smiles", ""),
-            "murcko_scaffold": row.get("murcko_scaffold", ""),
-            "molecular_formula": row.get("molecular_formula", ""),
-            "functional_groups": ";".join(row["functional_groups"]),
-            "complexity_bin": row["complexity_bin"],
-            "heavy_atoms": row["heavy_atoms"],
-            "mol_weight": f"{row['mol_weight']:.4f}",
-            "h_peak_count": row["h_peak_count"],
-            "c_peak_count": row["c_peak_count"],
+            "target_train_size": train_size,
+            "target_test_size": test_size,
+            "candidate_samples": len(candidates),
+            "clusters": len(set(int(item) for item in labels)),
+            "max_per_scaffold": max_per_scaffold,
         }
-        for row in rows
-    ]
+    )
+    rows = selected_csv_rows(train_items, "train") + selected_csv_rows(test_items, "test")
+    return ClusterSelection(train=train, test=test, report=report, selected_rows=rows)
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
-    """Build the representative sampling CLI parser.
+    """Build the Butina sampling CLI parser.
 
     Returns
     -------
     argparse.ArgumentParser
         Configured parser.
     """
-    parser = argparse.ArgumentParser(description="Build a representative SpectraLM subset.")
+    parser = argparse.ArgumentParser(description="Build Morgan FP + Butina representative subsets.")
     add_config_argument(parser)
     parser.add_argument("--dataset", default=None, help="Input sample pickle path.")
-    parser.add_argument("--split-csv", default=None, help="Scaffold split CSV path.")
     parser.add_argument("--out-dir", default=None, help="Output subset directory.")
     parser.add_argument("--train-size", type=int, default=None, help="Training subset size.")
     parser.add_argument("--test-size", type=int, default=None, help="Test subset size.")
-    parser.add_argument("--max-per-scaffold", type=int, default=None, help="Maximum rows per scaffold.")
-    parser.add_argument("--max-heavy-atoms", type=int, default=None, help="Optional heavy atom limit.")
-    parser.add_argument("--max-selfies-length", type=int, default=None, help="Optional SELFIES length limit.")
-    parser.add_argument("--pool-multiplier", type=int, default=None, help="Candidate pool multiplier.")
+    parser.add_argument("--butina-cutoff", type=float, default=None, help="Tanimoto similarity cutoff.")
+    parser.add_argument("--bucketed", action="store_true", default=None, help="Enable scaffold-stratified bucketed Butina.")
+    parser.add_argument("--max-bucket-size", type=int, default=None, help="Maximum molecules per Butina bucket.")
     parser.add_argument("--seed", type=int, default=None, help="Random seed.")
     return parser
 
 
-def config_value(args: argparse.Namespace, config: dict[str, Any], name: str, default: Any) -> Any:
-    """Return an argparse value with config and default fallback.
+def resolved_config(args: argparse.Namespace, config: dict[str, Any]) -> dict[str, Any]:
+    """Merge CLI overrides into a config dictionary.
 
     Parameters
     ----------
     args
-        Parsed CLI arguments.
+        Parsed arguments.
     config
-        Loaded configuration dictionary.
-    name
-        Argument and config key.
-    default
-        Fallback value.
+        YAML configuration.
 
     Returns
     -------
-    Any
-        Resolved value.
+    dict[str, Any]
+        Resolved configuration.
     """
-    value = getattr(args, name)
-    return value if value is not None else config.get(name, default)
+    merged = dict(config)
+    for key in (
+        "dataset",
+        "out_dir",
+        "train_size",
+        "test_size",
+        "butina_cutoff",
+        "bucketed",
+        "max_bucket_size",
+        "seed",
+    ):
+        value = getattr(args, key)
+        if value is not None:
+            merged[key] = value
+    return merged
 
 
-def main() -> None:
-    """Run representative sampling from the command line."""
-    args = build_arg_parser().parse_args()
-    config = load_config(args.config)
-    dataset_path = config_value(args, config, "dataset", "dataset/NMRexp_spectra_dataset.pkl")
-    split_csv = config_value(args, config, "split_csv", "dataset/splits/scaffold_split.csv")
-    out_dir = Path(config_value(args, config, "out_dir", "dataset/subsets/spectralm_500_100"))
-    train_size = int(config_value(args, config, "train_size", 500))
-    test_size = int(config_value(args, config, "test_size", 100))
-    max_per_scaffold = int(config_value(args, config, "max_per_scaffold", 1))
-    max_heavy_atoms = config_value(args, config, "max_heavy_atoms", None)
-    max_selfies_length = config_value(args, config, "max_selfies_length", None)
-    pool_multiplier = int(config_value(args, config, "pool_multiplier", 20))
-    seed = int(config_value(args, config, "seed", 3407))
-    split_rows = load_split_csv(Path(split_csv))
-    train_pool_size = train_size * pool_multiplier
-    test_pool_size = test_size * pool_multiplier
-    print(f"Preselecting {train_pool_size:,} train candidate IDs...", file=sys.stderr, flush=True)
-    train_ids = preselect_split_ids(split_rows, "train", train_pool_size, max_per_scaffold, seed)
-    print(f"Preselecting {test_pool_size:,} test candidate IDs...", file=sys.stderr, flush=True)
-    test_ids = preselect_split_ids(split_rows, "test", test_pool_size, max_per_scaffold, seed + 1)
-    keep_ids = train_ids | test_ids
-    print(f"Loading dataset and attaching {len(keep_ids):,} candidate samples...", file=sys.stderr)
-    rows = attach_split_metadata(load_pickle_list(Path(dataset_path)), split_rows, keep_ids=keep_ids)
-    train = representative_sample(
-        rows,
-        split_name="train",
-        target_size=train_size,
-        max_per_scaffold=max_per_scaffold,
-        max_heavy_atoms=max_heavy_atoms,
-        max_selfies_length=max_selfies_length,
-        seed=seed,
-    )
-    test = representative_sample(
-        rows,
-        split_name="test",
-        target_size=test_size,
-        max_per_scaffold=max_per_scaffold,
-        max_heavy_atoms=max_heavy_atoms,
-        max_selfies_length=max_selfies_length,
-        seed=seed + 1,
-    )
-    write_pickle(out_dir / "train.pkl", train)
-    write_pickle(out_dir / "test.pkl", test)
-    write_rows_csv(out_dir / "selected_samples.csv", selected_sample_csv_rows(train + test), SAMPLE_CSV_FIELDS)
-    report = {
-        "train": sample_report(train),
-        "test": sample_report(test),
-        "scaffold_overlap_train_test": len(
-            {row["murcko_scaffold"] for row in train} & {row["murcko_scaffold"] for row in test}
-        ),
-    }
-    write_json(out_dir / "sample_report.json", report)
+def main(argv: list[str] | None = None) -> None:
+    """Run Butina representative sampling from the command line.
+
+    Parameters
+    ----------
+    argv
+        Optional command-line argument list.
+    """
+    args = build_arg_parser().parse_args(argv)
+    config = resolved_config(args, load_config(args.config))
+    dataset = config.get("dataset", "dataset/NMRexp_spectra_dataset.pkl")
+    out_dir = Path(config.get("out_dir", "dataset/subsets/spectralm_butina_1000_300"))
+    samples = load_pickle_list(dataset)
+    fingerprints, feature_rows = build_sample_features(samples, config)
+    fingerprint_path = config.get("fingerprints", "dataset/features/morgan_fingerprints.npz")
+    index_path = config.get("index", "dataset/features/morgan_feature_index.csv")
+    save_feature_outputs(fingerprints, feature_rows, fingerprint_path, index_path)
+    result = cluster_samples(fingerprints, config, feature_rows)
+    selection = select_cluster_representatives(samples, feature_rows, result.labels, fingerprints, config)
+    write_pickle(out_dir / "train.pkl", selection.train)
+    write_pickle(out_dir / "test.pkl", selection.test)
+    write_rows_csv(out_dir / "selected_samples.csv", selection.selected_rows, SELECTED_FIELDS)
+    report = dict(selection.report)
+    report["method"] = result.method
+    report["butina_cutoff"] = result.cutoff
+    report["bucket_count"] = result.bucket_count
+    report["max_bucket_size"] = max(result.bucket_sizes or [0])
+    write_json(out_dir / "cluster_report.json", report)
     print(json.dumps(report, ensure_ascii=False, indent=2))
     print(f"Wrote {out_dir}")
 
 
 if __name__ == "__main__":
     main()
-

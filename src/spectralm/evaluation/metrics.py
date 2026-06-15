@@ -345,7 +345,7 @@ def main() -> None:
     args = build_arg_parser().parse_args()
     config = load_config(args.config)
     predictions_path = args.predictions or config.get("predictions", "outputs/predictions.jsonl")
-    references_path = args.references or config.get("references", "dataset/subsets/spectralm_500_100/test.pkl")
+    references_path = args.references or config.get("references", "dataset/subsets/spectralm_butina_1000_300/test.pkl")
     output_path = args.output or config.get("output", "outputs/evaluation_report.json")
     predictions = load_prediction_texts(predictions_path)
     references = load_pickle_list(references_path)
@@ -357,4 +357,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

@@ -320,9 +320,9 @@ def resolve_args(args: argparse.Namespace, config: dict[str, Any]) -> argparse.N
     """
     defaults = {
         "model_path": "/mnt/data/kimariyb/models/Qwen3-VL-8B-Instruct",
-        "train_dataset": "dataset/subsets/spectralm_500_100/train.pkl",
-        "eval_dataset": "dataset/subsets/spectralm_500_100/test.pkl",
-        "output_dir": "outputs/spectralm-pilot-qwen3-vl-8b",
+        "train_dataset": "dataset/subsets/spectralm_butina_1000_300/train.pkl",
+        "eval_dataset": "dataset/subsets/spectralm_butina_1000_300/test.pkl",
+        "output_dir": "outputs/spectralm-butina-qwen3-vl-8b",
         "max_seq_length": 2048,
         "per_device_train_batch_size": 1,
         "gradient_accumulation_steps": 8,

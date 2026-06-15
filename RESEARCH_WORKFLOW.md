@@ -58,7 +58,9 @@ flowchart TB
 | `src/spectralm/data/preprocessing.py` | 合并同一分子的 `1H` 与 `13C` 数据，生成标准样本 |
 | `src/spectralm/spectra/render.py` | 将离散峰表模拟为 combined NMR 谱图 |
 | `src/spectralm/data/splitting.py` | 生成 scaffold split 和数据质量报告 |
-| `src/spectralm/data/sampling.py` | 从全量 split 中抽取代表性小样本 |
+| `src/spectralm/data/features.py` | 生成结构-only Morgan fingerprint |
+| `src/spectralm/data/clustering.py` | 使用 Butina 对 Morgan fingerprint 聚类 |
+| `src/spectralm/data/sampling.py` | 从分桶 Butina 聚类中选择代表性小样本 |
 | `src/spectralm/training/dataset.py` | 构造多模态训练样本 |
 | `src/spectralm/evaluation/metrics.py` | 评价结构预测、相似度、官能团一致性和 NMR 规则违反 |
 
@@ -66,25 +68,51 @@ flowchart TB
 
 全量数据已完成 Bemis-Murcko scaffold split，确保 train、validation 和 test 的 scaffold 不重叠。该设置用于降低结构记忆和相似骨架泄漏风险。
 
-首轮 pilot 微调使用：
+首轮结构代表性微调使用：
 
 ```text
-dataset/subsets/spectralm_500_100_pilot/
+dataset/subsets/spectralm_butina_1000_300/
 ```
 
 该子集包含：
 
 | Split | 样本数 | 约束 |
 | --- | ---: | --- |
-| Train | 500 | 每个 scaffold 最多 1 条 |
-| Test | 100 | 与 train scaffold 无重叠 |
+| Train | 1000 | Morgan FP + Butina 代表样本；每个 scaffold 默认最多 1 条 |
+| Test | 300 | 与 train scaffold 无重叠 |
 
-pilot 子集额外限制：
+Butina 子集构建原则：
 
-- `heavy_atoms <= 45`
-- `SELFIES length <= 420`
-- 保留官能团和复杂度覆盖
-- 避免极端长目标影响首轮训练
+- 只使用分子结构特征，不使用 `1H/13C` 峰表统计参与采样。
+- Morgan fingerprint 默认使用 `radius=2`、`nBits=1024`。
+- Butina 默认使用 Tanimoto similarity cutoff `0.7`。
+- 优先覆盖更多 Butina cluster，同时限制 scaffold 重复。
+
+## 阶段三补充：Morgan FP + Butina 聚类压缩
+
+当原始实验 NMR 数据达到百万级，而微调预算只能支持约 `1000` 条训练样本时，推荐使用结构聚类压缩流程替代纯随机抽样。该流程只从分子结构中提取 Morgan fingerprint，再用 Butina 聚类压缩结构冗余样本，最后按 scaffold 约束选择代表样本。
+
+默认流程为：
+
+```bash
+spectralm-fingerprint --config configs/fingerprint.yaml
+spectralm-butina-sample --config configs/sample.yaml
+```
+
+聚类特征只包括：
+
+- Morgan fingerprint
+- canonical `SMILES`
+- Murcko scaffold
+- 官能团标签，仅用于报告和代表样本排序，不参与谱学特征建模
+
+默认输出目录为：
+
+```text
+dataset/subsets/spectralm_butina_1000_300/
+```
+
+该流程替代旧的 `spectralm_500_100` 启发式采样流程，作为当前主实验推荐数据集。
 
 ## 阶段四：训练样本格式
 
@@ -186,4 +214,4 @@ spectralm-train --config configs/train_pilot.yaml
 2. 使用 `configs/train_pilot.yaml` 跑通首轮 QLoRA 微调。
 3. 抽样检查模型输出格式是否稳定。
 4. 使用 `spectralm-evaluate --config configs/eval_pilot.yaml` 生成首轮评价报告。
-5. 根据 pilot 结果决定是否扩大到更难的 `spectralm_500_100` 或更大规模数据。
+5. 根据 pilot 结果调整 Butina cutoff、fingerprint bits 或 train/test 规模。

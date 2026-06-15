@@ -1,5 +1,0 @@
-input: dataset/NMRexp_spectra_dataset.pkl
-out_dir: dataset/splits
-seed: 3407
-ratios: [0.8, 0.1, 0.1]
-

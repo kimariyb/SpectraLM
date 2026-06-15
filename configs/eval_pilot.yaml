@@ -1,4 +1,3 @@
 predictions: outputs/predictions.jsonl
-references: dataset/subsets/spectralm_500_100/test.pkl
+references: dataset/subsets/spectralm_butina_1000_300/test.pkl
 output: outputs/evaluation_report.json
-

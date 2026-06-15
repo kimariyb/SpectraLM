@@ -1,0 +1,6 @@
+dataset: dataset/NMRexp_spectra_dataset.pkl
+fingerprints: dataset/features/morgan_fingerprints.npz
+index: dataset/features/morgan_feature_index.csv
+fingerprint_bits: 1024
+fingerprint_radius: 2
+seed: 3407

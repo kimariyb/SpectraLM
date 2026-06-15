@@ -33,8 +33,8 @@ dev = [
 
 [project.scripts]
 spectralm-preprocess = "spectralm.data.preprocessing:main"
-spectralm-split = "spectralm.data.splitting:main"
-spectralm-sample = "spectralm.data.sampling:main"
+spectralm-fingerprint = "spectralm.data.features:main"
+spectralm-butina-sample = "spectralm.data.sampling:main"
 spectralm-train = "spectralm.training.train:main"
 spectralm-evaluate = "spectralm.evaluation.metrics:main"
 spectralm-render-demo = "spectralm.spectra.render:main"
@@ -54,4 +54,3 @@ target-version = "py310"
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
 ignore = ["E501"]
-
