@@ -233,6 +233,28 @@ def process_1h_peaks(raw_peaks: list[Any]) -> list[dict[str, Any]]:
         values = list(item) if isinstance(item, (list, tuple)) else [item]
         if not values:
             continue
+        source_order = (
+            len(values) >= 5
+            and parse_float(values[0], default=None) is None
+            and parse_float(values[3], default=None) is not None
+            and parse_float(values[4], default=None) is not None
+        )
+        if source_order:
+            multiplicity = values[0]
+            couplings = values[1]
+            integration = values[2]
+            shift_high = float(parse_float(values[3], default=0.0) or 0.0)
+            shift_low = float(parse_float(values[4], default=shift_high) or shift_high)
+            shift = (shift_high + shift_low) / 2.0
+            peak = {
+                "shift": float(shift),
+                "shift_range": [min(shift_low, shift_high), max(shift_low, shift_high)],
+                "multiplicity": normalize_multiplicity(multiplicity),
+                "J": parse_couplings(couplings),
+                "integration": parse_integration(integration),
+            }
+            peaks.append(peak)
+            continue
         shift = parse_float(values[0], default=None)
         if shift is None:
             continue
@@ -291,4 +313,3 @@ def format_13c_peak(peak: dict[str, Any] | float) -> str:
     if isinstance(shift, list):
         return "/".join(f"{float(value):.1f}" for value in shift)
     return f"{float(shift):.1f}"
-

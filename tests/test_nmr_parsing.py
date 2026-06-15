@@ -21,7 +21,27 @@ def test_process_1h_peaks_tuple_rows() -> None:
     assert peaks == [{"shift": 1.23, "multiplicity": "t", "J": [7.1], "integration": 3.0}]
 
 
+def test_process_1h_peaks_source_tuple_rows() -> None:
+    """Source proton tuples should parse multiplicity-first rows."""
+    peaks = process_1h_peaks([("m", [], "2H", 7.27, 7.24), ("d", ["3.8Hz"], "2H", 3.68, 3.68)])
+    assert peaks == [
+        {
+            "shift": 7.255,
+            "shift_range": [7.24, 7.27],
+            "multiplicity": "m",
+            "J": [],
+            "integration": 2.0,
+        },
+        {
+            "shift": 3.68,
+            "shift_range": [3.68, 3.68],
+            "multiplicity": "d",
+            "J": [3.8],
+            "integration": 2.0,
+        },
+    ]
+
+
 def test_parse_frequency_uses_default_for_missing_value() -> None:
     """Frequency parsing should fall back for unknown values."""
     assert parse_frequency_mhz(None, default=500.0) == 500.0
-
