@@ -37,6 +37,7 @@ spectralm-fingerprint = "spectralm.data.features:main"
 spectralm-butina-sample = "spectralm.data.sampling:main"
 spectralm-plot-selection = "spectralm.analysis.visualization:main"
 spectralm-train = "spectralm.training.train:main"
+spectralm-predict = "spectralm.inference.predict:main"
 spectralm-evaluate = "spectralm.evaluation.metrics:main"
 spectralm-render-demo = "spectralm.spectra.render:main"
 

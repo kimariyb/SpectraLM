@@ -346,6 +346,7 @@ def main() -> None:
     config = load_config(args.config)
     args = resolve_args(args, config)
     configure_huggingface_env()
+
     from unsloth import FastVisionModel
     from unsloth.trainer import UnslothVisionDataCollator
     from trl import SFTConfig, SFTTrainer
