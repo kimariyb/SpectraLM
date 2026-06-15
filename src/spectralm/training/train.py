@@ -7,7 +7,11 @@ import inspect
 import os
 from typing import Any
 
+from spectralm.training.dataset import NmrReasoningDataset
 from spectralm.config import add_config_argument, load_config
+from unsloth import FastVisionModel
+from unsloth.trainer import UnslothVisionDataCollator
+from trl import SFTConfig, SFTTrainer
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -347,11 +351,7 @@ def main() -> None:
     args = resolve_args(args, config)
     configure_huggingface_env()
 
-    from unsloth import FastVisionModel
-    from unsloth.trainer import UnslothVisionDataCollator
-    from trl import SFTConfig, SFTTrainer
 
-    from spectralm.training.dataset import NmrReasoningDataset
 
     print(f"Loading base model: {args.model_path}")
     model, tokenizer = FastVisionModel.from_pretrained(
