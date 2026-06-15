@@ -17,6 +17,7 @@ Core command entrypoints:
 spectralm-preprocess --config configs/preprocess.yaml
 spectralm-fingerprint --config configs/fingerprint.yaml
 spectralm-butina-sample --config configs/sample.yaml
+spectralm-plot-selection --config configs/visualize_selection.yaml
 spectralm-train --config configs/train_pilot.yaml
 spectralm-evaluate --config configs/eval_pilot.yaml
 spectralm-render-demo --output-dir img/

@@ -87,6 +87,7 @@ Butina 子集构建原则：
 - Morgan fingerprint 默认使用 `radius=2`、`nBits=1024`。
 - Butina 默认使用 Tanimoto similarity cutoff `0.7`。
 - 优先覆盖更多 Butina cluster，同时限制 scaffold 重复。
+- 默认过滤 `heavy atoms > 45` 的过大分子，降低小规模微调目标长度和结构复杂度。
 
 ## 阶段三补充：Morgan FP + Butina 聚类压缩
 

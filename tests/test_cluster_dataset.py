@@ -120,6 +120,33 @@ def test_cluster_representatives_respect_sizes_and_scaffold_disjoint() -> None:
     assert selected.report["scaffold_overlap_train_test"] == 0
 
 
+def test_cluster_representatives_respect_max_heavy_atoms() -> None:
+    """Representative selection should exclude molecules above the heavy atom limit."""
+    samples = [
+        make_sample(0, "CCO", [1.2, 3.6], [18.0, 58.0]),
+        make_sample(1, "CCN", [1.1, 2.7], [15.0, 42.0]),
+        make_sample(2, "CCCCCCCCCCCC", [1.2], [30.0]),
+    ]
+    fingerprints, rows = build_sample_features(samples, {"fingerprint_bits": 64})
+    labels = cluster_samples(fingerprints, {"butina_cutoff": 0.7}).labels
+    selected = select_cluster_representatives(
+        samples,
+        rows,
+        labels,
+        fingerprints,
+        {
+            "train_size": 2,
+            "test_size": 1,
+            "max_heavy_atoms": 3,
+            "seed": 13,
+        },
+    )
+    selected_smiles = {row["canonical_smiles"] for row in selected.train + selected.test}
+    assert "CCCCCCCCCCCC" not in selected_smiles
+    assert selected.report["max_heavy_atoms"] == 3
+    assert selected.report["filtered_by_max_heavy_atoms"] == 1
+
+
 def test_feature_csv_rows_are_csv_serializable(ethanol_sample, tmp_path: Path) -> None:
     """Feature metadata rows should be serializable to CSV."""
     _, rows = build_sample_features([ethanol_sample], {"fingerprint_bits": 64})

@@ -15,7 +15,7 @@ import numpy as np
 from spectralm.config import add_config_argument, load_config
 from spectralm.data.clustering import cluster_samples
 from spectralm.data.features import build_sample_features, save_feature_outputs
-from spectralm.data.molecules import functional_group_labels, murcko_scaffold, sample_smiles
+from spectralm.data.molecules import functional_group_labels, heavy_atom_count, murcko_scaffold, sample_smiles
 from spectralm.io import load_pickle_list, write_json, write_pickle, write_rows_csv
 
 
@@ -130,6 +130,37 @@ def sort_candidates(candidates: list[dict[str, Any]], seed: int) -> list[dict[st
             ),
         )
     ]
+
+
+def filter_candidates(
+    candidates: list[dict[str, Any]],
+    max_heavy_atoms: int | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    """Filter candidate rows by molecule-level constraints.
+
+    Parameters
+    ----------
+    candidates
+        Candidate rows.
+    max_heavy_atoms
+        Optional maximum heavy atom count.
+
+    Returns
+    -------
+    tuple[list[dict[str, Any]], dict[str, int]]
+        Filtered candidates and filter counts.
+    """
+    if max_heavy_atoms is None:
+        return candidates, {"filtered_by_max_heavy_atoms": 0}
+    kept = []
+    filtered_by_heavy_atoms = 0
+    for item in candidates:
+        smiles = item["row"].get("canonical_smiles") or sample_smiles(item["sample"])
+        if heavy_atom_count(smiles) > max_heavy_atoms:
+            filtered_by_heavy_atoms += 1
+            continue
+        kept.append(item)
+    return kept, {"filtered_by_max_heavy_atoms": filtered_by_heavy_atoms}
 
 
 def select_one_split(
@@ -302,8 +333,14 @@ def select_cluster_representatives(
     train_size = int(cfg.get("train_size", 1000))
     test_size = int(cfg.get("test_size", 300))
     max_per_scaffold = int(cfg.get("max_per_scaffold", 1))
+    max_heavy_atoms = cfg.get("max_heavy_atoms")
+    max_heavy_atoms = int(max_heavy_atoms) if max_heavy_atoms is not None else None
     seed = int(cfg.get("seed", 3407))
-    candidates = sort_candidates(candidate_rows(samples, feature_rows, labels), seed)
+    candidates, filter_report = filter_candidates(
+        candidate_rows(samples, feature_rows, labels),
+        max_heavy_atoms=max_heavy_atoms,
+    )
+    candidates = sort_candidates(candidates, seed)
     train_items = select_one_split(candidates, train_size, max_per_scaffold)
     train_scaffolds = {item["row"].get("murcko_scaffold", "") for item in train_items}
     remaining = [item for item in candidates if item not in train_items]
@@ -318,8 +355,10 @@ def select_cluster_representatives(
             "candidate_samples": len(candidates),
             "clusters": len(set(int(item) for item in labels)),
             "max_per_scaffold": max_per_scaffold,
+            "max_heavy_atoms": max_heavy_atoms,
         }
     )
+    report.update(filter_report)
     rows = selected_csv_rows(train_items, "train") + selected_csv_rows(test_items, "test")
     return ClusterSelection(train=train, test=test, report=report, selected_rows=rows)
 
@@ -341,6 +380,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--butina-cutoff", type=float, default=None, help="Tanimoto similarity cutoff.")
     parser.add_argument("--bucketed", action="store_true", default=None, help="Enable scaffold-stratified bucketed Butina.")
     parser.add_argument("--max-bucket-size", type=int, default=None, help="Maximum molecules per Butina bucket.")
+    parser.add_argument("--max-heavy-atoms", type=int, default=None, help="Maximum allowed heavy atoms per molecule.")
     parser.add_argument("--seed", type=int, default=None, help="Random seed.")
     return parser
 
@@ -369,6 +409,7 @@ def resolved_config(args: argparse.Namespace, config: dict[str, Any]) -> dict[st
         "butina_cutoff",
         "bucketed",
         "max_bucket_size",
+        "max_heavy_atoms",
         "seed",
     ):
         value = getattr(args, key)
