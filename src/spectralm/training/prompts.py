@@ -1,65 +1,61 @@
+"""Prompt and target builders for NMR reasoning fine-tuning."""
+
+from __future__ import annotations
+
 from typing import Any
 
-
-def sample_smiles(sample: dict[str, Any]) -> str | None:
-    return (
-        sample.get("canonical_smiles")
-        or sample.get("canonical_SMILES")
-        or sample.get("SMILES")
-        or sample.get("smiles")
-    )
+from spectralm.data.molecules import canonicalize_smiles, sample_selfies, sample_smiles
+from spectralm.data.nmr import format_13c_peak, format_1h_peak, sample_peaks
 
 
-def peak_count(sample: dict[str, Any], nucleus: str) -> int:
-    nmr = sample.get(nucleus) or {}
-    peaks = nmr.get("peaks", nmr.get("data", []))
-    return len(peaks or [])
+STRUCTURE_PROMPTS = [
+    "Predict the molecular structure from the provided 1H and 13C NMR spectra.",
+    "Analyze the multimodal NMR evidence and infer the molecular structure.",
+    "Use the spectra and peak tables to determine the molecular structure.",
+]
 
-
-def sample_peaks(sample: dict[str, Any], nucleus: str) -> list[Any]:
-    nmr = sample.get(nucleus, {})
-    return nmr.get("peaks", nmr.get("data", [])) or []
-
-
-def selfies(sample: dict[str, Any]) -> str:
-    return sample.get("selfies") or sample.get("SELFIES") or ""
+FUNCTIONAL_GROUP_PROMPTS = [
+    "Identify the functional groups from the spectra.",
+]
 
 
 def canonical_smiles(sample: dict[str, Any]) -> str:
-    return (
-        sample.get("canonical_smiles")
-        or sample.get("canonical_SMILES")
-        or sample.get("SMILES")
-        or sample.get("smiles")
-        or ""
-    )
+    """Return canonical SMILES text for a sample.
 
+    Parameters
+    ----------
+    sample
+        Sample dictionary.
 
-def format_1h_peak(peak: dict[str, Any]) -> str:
-    shift = float(peak["shift"])
-    mult = peak.get("multiplicity", "s")
-    integration = peak.get("integration", 1)
-    j_values = peak.get("J", [])
-    integration_text = f"{integration:g}H" if isinstance(integration, (int, float)) else str(integration)
-    if j_values:
-        j_text = ", ".join([f"{float(j):.1f}" for j in j_values])
-        return f"{shift:.2f} ppm ({mult}, J={j_text} Hz, {integration_text})"
-    return f"{shift:.2f} ppm ({mult}, {integration_text})"
-
-
-def format_13c_peak(peak: dict[str, Any] | float) -> str:
-    shift = peak["shift"] if isinstance(peak, dict) else peak
-    if isinstance(shift, list):
-        return "/".join(f"{float(value):.1f}" for value in shift)
-    return f"{float(shift):.1f}"
+    Returns
+    -------
+    str
+        Canonical SMILES or an empty string.
+    """
+    smiles = sample.get("canonical_smiles") or sample_smiles(sample)
+    canonical = canonicalize_smiles(smiles)
+    return canonical or str(smiles or "")
 
 
 def build_structure_prompt(sample: dict[str, Any], prompt: str) -> str:
+    """Build the multimodal NMR structure-reasoning prompt.
+
+    Parameters
+    ----------
+    sample
+        Normalized sample dictionary.
+    prompt
+        Task instruction prefix.
+
+    Returns
+    -------
+    str
+        Full text prompt containing peak tables and rule hints.
+    """
     h_nmr = sample.get("1H_NMR", {})
     c_nmr = sample.get("13C_NMR", {})
     h_peaks = [format_1h_peak(peak) for peak in sample_peaks(sample, "1H_NMR")[:30]]
     c_peaks = [format_13c_peak(peak) for peak in sample_peaks(sample, "13C_NMR")[:80]]
-
     sections = [
         prompt,
         (
@@ -91,12 +87,23 @@ def build_structure_prompt(sample: dict[str, Any], prompt: str) -> str:
 
 
 def build_reasoning_target(sample: dict[str, Any]) -> str:
+    """Build a supervised reasoning target followed by SELFIES and SMILES.
+
+    Parameters
+    ----------
+    sample
+        Normalized sample dictionary.
+
+    Returns
+    -------
+    str
+        Training target text.
+    """
     h_peaks = sample_peaks(sample, "1H_NMR")
     c_peaks = sample_peaks(sample, "13C_NMR")
     functional_groups = sample.get("functional_groups") or []
     formula = sample.get("molecular_formula", "unknown")
     h_total = sum(float(peak.get("integration", 0)) for peak in h_peaks if isinstance(peak, dict))
-
     lines = [
         "Spectral reasoning:",
         f"- The 1H NMR spectrum contains {len(h_peaks)} reported proton environments with total integration about {h_total:g}H.",
@@ -104,14 +111,14 @@ def build_reasoning_target(sample: dict[str, Any]) -> str:
     ]
     if functional_groups:
         lines.append(f"- Functional-group evidence is consistent with: {', '.join(functional_groups)}.")
-
     lines.extend(
         [
             f"- The proposed molecular formula is {formula}.",
             "- The final structure should satisfy the reported 1H integration, splitting patterns, and 13C environment count.",
             "",
-            f"Final SELFIES: {selfies(sample)}",
+            f"Final SELFIES: {sample_selfies(sample)}",
             f"Final canonical SMILES: {canonical_smiles(sample)}",
         ]
     )
     return "\n".join(lines)
+

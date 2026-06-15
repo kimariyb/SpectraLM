@@ -1,0 +1,42 @@
+"""Shared pytest fixtures for SpectraLM tests."""
+
+from __future__ import annotations
+
+from typing import Any
+
+import pytest
+
+
+@pytest.fixture
+def ethanol_sample() -> dict[str, Any]:
+    """Return a small paired-NMR ethanol sample.
+
+    Returns
+    -------
+    dict[str, Any]
+        Normalized SpectraLM sample.
+    """
+    return {
+        "id": "ethanol",
+        "smiles": "CCO",
+        "canonical_smiles": "CCO",
+        "selfies": "[C][C][O]",
+        "molecular_formula": "C2H6O",
+        "murcko_scaffold": "acyclic:CCO",
+        "functional_groups": ["alcohol"],
+        "13C_NMR": {
+            "frequency": "101 MHz",
+            "solvent": "CDCl3",
+            "peaks": [{"shift": 58.1}, {"shift": 18.2}],
+        },
+        "1H_NMR": {
+            "frequency": "400 MHz",
+            "solvent": "CDCl3",
+            "peaks": [
+                {"shift": 3.65, "multiplicity": "q", "J": [7.0], "integration": 2.0},
+                {"shift": 1.18, "multiplicity": "t", "J": [7.0], "integration": 3.0},
+                {"shift": 2.0, "multiplicity": "brs", "J": [], "integration": 1.0},
+            ],
+        },
+    }
+

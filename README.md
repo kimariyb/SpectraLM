@@ -1,6 +1,26 @@
 # SpectraLM：基于多模态大模型与谱学推理的 NMR 分子结构解析系统
 
-![toc](src/img/workflow.png)
+![toc](img/workflow.png)
+
+## Quick Start
+
+```bash
+conda activate ml
+pip install -r requirements.txt
+python -m compileall src tests
+pytest
+```
+
+Core command entrypoints:
+
+```bash
+spectralm-preprocess --config configs/preprocess.yaml
+spectralm-split --config configs/split.yaml
+spectralm-sample --config configs/sample_500_100.yaml
+spectralm-train --config configs/train_pilot.yaml
+spectralm-evaluate --config configs/eval_pilot.yaml
+spectralm-render-demo --output-dir img/
+```
 
 
 ## 一、项目背景
@@ -617,4 +637,3 @@ Agentic AI for Automated NMR Structure Analysis
 - 给出推理过程
 - 验证结构一致性
 - 实现可解释的自动结构解析
-

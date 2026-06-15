@@ -1,0 +1,4 @@
+predictions: outputs/predictions.jsonl
+references: dataset/subsets/spectralm_500_100/test.pkl
+output: outputs/evaluation_report.json
+

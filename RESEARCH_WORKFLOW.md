@@ -55,11 +55,12 @@ flowchart TB
 
 | 文件 | 作用 |
 | --- | --- |
-| `src/scripts/run_preprocess.py` | 合并同一分子的 `1H` 与 `13C` 数据，生成标准样本 |
-| `src/data/spectra.py` | 将离散峰表模拟为 combined NMR 谱图 |
-| `src/scripts/run_split.py` | 生成 scaffold split 和数据质量报告 |
-| `src/scripts/run_sample.py` | 从全量 split 中抽取代表性小样本 |
-| `src/data/datasets.py` | 构造多模态训练样本 |
+| `src/spectralm/data/preprocessing.py` | 合并同一分子的 `1H` 与 `13C` 数据，生成标准样本 |
+| `src/spectralm/spectra/render.py` | 将离散峰表模拟为 combined NMR 谱图 |
+| `src/spectralm/data/splitting.py` | 生成 scaffold split 和数据质量报告 |
+| `src/spectralm/data/sampling.py` | 从全量 split 中抽取代表性小样本 |
+| `src/spectralm/training/dataset.py` | 构造多模态训练样本 |
+| `src/spectralm/evaluation/metrics.py` | 评价结构预测、相似度、官能团一致性和 NMR 规则违反 |
 
 ## 阶段三：scaffold split 与代表性抽样
 
@@ -115,14 +116,10 @@ Final canonical SMILES: ...
 推荐远程 GPU 服务器命令：
 
 ```bash
-python src/train.py \
-  --model-path /mnt/data/kimariyb/models/Qwen3-VL-8B-Instruct \
-  --train-dataset dataset/subsets/spectralm_500_100_pilot/train.pkl \
-  --eval-dataset dataset/subsets/spectralm_500_100_pilot/test.pkl \
-  --output-dir outputs/spectralm-pilot-qwen3-vl-8b
+spectralm-train --config configs/train_pilot.yaml
 ```
 
-当前本地不运行 GPU 训练。`src/train.py` 已重构为只有执行 `main()` 时才加载 Unsloth 和模型。
+当前本地不运行 GPU 训练。`src/spectralm/training/train.py` 已重构为只有执行 `main()` 时才加载 Unsloth 和模型。
 
 ## 阶段六：评价指标
 
@@ -181,12 +178,12 @@ python src/train.py \
 - 代表性 pilot 子集生成
 - 多模态 dataset 构造
 - 训练脚本重构
-- 本地单元测试与样本预览
+- 评价脚本与基础测试骨架
 
 下一步：
 
 1. 将项目同步到远程 GPU 服务器。
-2. 使用 `spectralm_500_100_pilot` 跑通首轮 QLoRA 微调。
+2. 使用 `configs/train_pilot.yaml` 跑通首轮 QLoRA 微调。
 3. 抽样检查模型输出格式是否稳定。
-4. 实现结构与推理评价脚本。
+4. 使用 `spectralm-evaluate --config configs/eval_pilot.yaml` 生成首轮评价报告。
 5. 根据 pilot 结果决定是否扩大到更难的 `spectralm_500_100` 或更大规模数据。
