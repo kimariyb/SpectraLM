@@ -156,6 +156,52 @@ def ensure_padding_token(processing_class: Any) -> None:
         tokenizer.pad_token = tokenizer.eos_token
 
 
+def set_token_attr(target: Any, name: str, value: str) -> None:
+    """Set a tokenizer or processor token attribute when possible.
+
+    Parameters
+    ----------
+    target
+        Tokenizer-like or processor-like object.
+    name
+        Attribute name to set.
+    value
+        Token value.
+    """
+    try:
+        setattr(target, name, value)
+    except Exception:
+        return
+
+
+def normalize_training_special_tokens(training_args: Any, processing_class: Any) -> None:
+    """Normalize TRL special-token fields after ``SFTConfig`` construction.
+
+    Some TRL and Unsloth versions initialize ``SFTConfig.eos_token`` with the
+    placeholder ``"<EOS_TOKEN>"`` even when a valid Qwen tokenizer is supplied.
+    ``SFTTrainer`` validates that field against the processor vocabulary, so the
+    final config object must be patched after construction.
+
+    Parameters
+    ----------
+    training_args
+        Constructed TRL SFT configuration object.
+    processing_class
+        Hugging Face tokenizer or multimodal processor.
+    """
+    tokenizer = inner_tokenizer(processing_class)
+    eos_token = resolve_eos_token(processing_class)
+    if eos_token is None:
+        return
+    set_token_attr(tokenizer, "eos_token", eos_token)
+    set_token_attr(processing_class, "eos_token", eos_token)
+    set_token_attr(training_args, "eos_token", eos_token)
+    if getattr(tokenizer, "pad_token", None) is None:
+        set_token_attr(tokenizer, "pad_token", eos_token)
+    if getattr(training_args, "pad_token", None) in (None, "<PAD_TOKEN>"):
+        set_token_attr(training_args, "pad_token", getattr(tokenizer, "pad_token", eos_token))
+
+
 def build_sft_config_kwargs(
     args: argparse.Namespace,
     config_cls,
@@ -300,9 +346,9 @@ def main() -> None:
     config = load_config(args.config)
     args = resolve_args(args, config)
     configure_huggingface_env()
-    from trl import SFTConfig, SFTTrainer
     from unsloth import FastVisionModel
     from unsloth.trainer import UnslothVisionDataCollator
+    from trl import SFTConfig, SFTTrainer
 
     from spectralm.training.dataset import NmrReasoningDataset
 
@@ -328,6 +374,9 @@ def main() -> None:
     train_dataset = NmrReasoningDataset(args.train_dataset, task_probs={"structure_reasoning": 1.0})
     eval_dataset = NmrReasoningDataset(args.eval_dataset, task_probs={"structure_reasoning": 1.0})
     training_args = SFTConfig(**build_sft_config_kwargs(args, SFTConfig, tokenizer))
+    normalize_training_special_tokens(training_args, tokenizer)
+    if getattr(training_args, "eos_token", None):
+        print(f"Using EOS token: {training_args.eos_token}")
     trainer = SFTTrainer(
         **build_sft_trainer_kwargs(
             SFTTrainer,

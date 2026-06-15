@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import argparse
 
-from spectralm.training.train import build_sft_config_kwargs, resolve_eos_token
+from spectralm.training.train import (
+    build_sft_config_kwargs,
+    normalize_training_special_tokens,
+    resolve_eos_token,
+)
 
 
 class FakeTokenizer:
@@ -74,3 +78,10 @@ def test_build_sft_config_kwargs_sets_valid_eos_token() -> None:
     assert kwargs["eos_token"] == "<|im_end|>"
     assert kwargs["max_length"] == 128
 
+
+def test_normalize_training_special_tokens_replaces_trl_placeholder() -> None:
+    """Post-construction normalization should replace TRL placeholder tokens."""
+    training_args = argparse.Namespace(eos_token="<EOS_TOKEN>", pad_token="<PAD_TOKEN>")
+    normalize_training_special_tokens(training_args, FakeProcessor())
+    assert training_args.eos_token == "<|im_end|>"
+    assert training_args.pad_token == "<|im_end|>"
