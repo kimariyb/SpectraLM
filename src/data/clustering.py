@@ -191,6 +191,7 @@ def cluster_samples(
         n_init=3,
         max_iter=100,
         reassignment_ratio=0.01,
+        verbose=1,
     )
     labels = kmeans.fit_predict(reduced).astype(np.int32)
     clusters = _labels_to_clusters(labels)
@@ -355,6 +356,85 @@ def plot_elbow(results: list[dict[str, Any]], output_path: str | Path) -> None:
     plt.savefig(output, dpi=150, bbox_inches="tight")
     plt.close(fig)
     print(f"Wrote elbow plot to {output_path}")
+
+
+def plot_tsne_selection(
+    tsne_coords: np.ndarray,
+    train_row_indices: list[int],
+    test_row_indices: list[int],
+    output_path: str | Path,
+    title: str = "Selected Molecules (t-SNE)",
+) -> None:
+    """Plot all molecules as grey background with selected train/test highlighted.
+
+    Parameters
+    ----------
+    tsne_coords
+        ``(n_samples, 2)`` t-SNE coordinates for all molecules.
+    train_row_indices
+        Row indices of selected training molecules.
+    test_row_indices
+        Row indices of selected test molecules.
+    output_path
+        Output image path.
+    title
+        Plot title.
+    """
+    sns.set_theme(style="ticks", context="notebook", font_scale=1.1)
+    fig, ax = plt.subplots(figsize=(10, 8))
+
+    total = tsne_coords.shape[0]
+    selected = set(train_row_indices) | set(test_row_indices)
+    background = np.array([i for i in range(total) if i not in selected])
+
+    # Background: all unselected molecules
+    ax.scatter(
+        tsne_coords[background, 0],
+        tsne_coords[background, 1],
+        s=3,
+        c="#c9c9c9",
+        alpha=0.15,
+        linewidths=0,
+        label=f"Unselected ({len(background):,})",
+    )
+
+    # Train: red
+    if train_row_indices:
+        ax.scatter(
+            tsne_coords[train_row_indices, 0],
+            tsne_coords[train_row_indices, 1],
+            s=28,
+            c="#d62728",
+            alpha=0.9,
+            edgecolors="white",
+            linewidths=0.35,
+            label=f"Train ({len(train_row_indices):,})",
+        )
+
+    # Test: blue
+    if test_row_indices:
+        ax.scatter(
+            tsne_coords[test_row_indices, 0],
+            tsne_coords[test_row_indices, 1],
+            s=28,
+            c="#1f77b4",
+            alpha=0.9,
+            edgecolors="white",
+            linewidths=0.35,
+            label=f"Test ({len(test_row_indices):,})",
+        )
+
+    ax.set_title(title, fontsize=16)
+    ax.set_xlabel("t-SNE 1")
+    ax.set_ylabel("t-SNE 2")
+    ax.legend(frameon=False, loc="best")
+    sns.despine(ax=ax)
+
+    output = Path(output_path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    plt.tight_layout()
+    plt.savefig(output, dpi=300, bbox_inches="tight")
+    plt.close(fig)
 
 
 def plot_tsne_clusters(

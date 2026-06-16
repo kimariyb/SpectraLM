@@ -21,7 +21,7 @@ from src.data.clustering import (
     cluster_samples,
     elbow_n_clusters,
     pca_reduce,
-    plot_tsne_clusters,
+    plot_tsne_selection,
     sanitise_fingerprints,
     tsne_project,
 )
@@ -437,6 +437,11 @@ def run(config: dict[str, Any]) -> None:
 
     result = cluster_samples(fingerprints, config, feature_rows)
 
+    # --- Representative sampling --------------------------------------------
+    selection = select_cluster_representatives(
+        samples, feature_rows, result.labels, fingerprints, config,
+    )
+
     # --- TSNE visualisation -------------------------------------------------
     tsne_output = config.get("tsne_output")
     if tsne_output:
@@ -444,13 +449,14 @@ def run(config: dict[str, Any]) -> None:
         seed = int(config.get("seed", 3407))
         reduced, _ = pca_reduce(fingerprints, n_components=pca_components, random_state=seed)
         coords = tsne_project(reduced, random_state=seed)
-        plot_tsne_clusters(coords, result.labels, tsne_output)
-        print(f"Wrote TSNE plot to {tsne_output}")
 
-    # --- Representative sampling --------------------------------------------
-    selection = select_cluster_representatives(
-        samples, feature_rows, result.labels, fingerprints, config,
-    )
+        # Map selected sample ids → feature row indices
+        id_to_row = {row["id"]: int(row["row_index"]) for row in feature_rows}
+        train_indices = [id_to_row[s["id"]] for s in selection.train if s["id"] in id_to_row]
+        test_indices = [id_to_row[s["id"]] for s in selection.test if s["id"] in id_to_row]
+
+        plot_tsne_selection(coords, train_indices, test_indices, tsne_output)
+        print(f"Wrote TSNE plot to {tsne_output}")
     write_pickle(out_dir / "train.pkl", selection.train)
     write_pickle(out_dir / "test.pkl", selection.test)
     write_rows_csv(out_dir / "selected_samples.csv", selection.selected_rows, SELECTED_FIELDS)
