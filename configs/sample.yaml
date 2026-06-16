@@ -4,13 +4,12 @@ index: dataset/features/morgan_feature_index.csv
 out_dir: dataset/subsets/
 train_size: 1000
 test_size: 200
-distance_threshold: 0.4
-max_cluster_samples: 100000
-n_jobs: 4
+n_clusters: 555
+pca_components: 50
+batch_size: 10000
 max_per_scaffold: 1
 max_heavy_atoms: 30
 fingerprint_bits: 1024
 fingerprint_radius: 2
-pca_components: 20
-tsne_output: img/maxmin_tsne.png
+tsne_output: img/kmeans_tsne.png
 seed: 3407

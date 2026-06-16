@@ -1,11 +1,12 @@
-"""MaxMin clustering for molecular fingerprints.
+"""MiniBatchKMeans clustering with PCA for molecular fingerprints.
 
-Pipeline: sanitise → MaxMin.  PCA + t-SNE helpers are kept for
-post-hoc visualisation.
+Pipeline: sanitise → PCA → MiniBatchKMeans.  PCA + t-SNE helpers are
+kept for post-hoc visualisation.
 """
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -13,15 +14,16 @@ from typing import Any
 import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
+warnings.filterwarnings("ignore", category=RuntimeWarning, module="sklearn")
+
+from sklearn.cluster import MiniBatchKMeans
 from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
-from joblib import Parallel, delayed
-from skfp.clustering import MaxMinClustering
 
 
 @dataclass
 class ClusterResult:
-    """Container for MaxMin clustering outputs.
+    """Container for MiniBatchKMeans clustering outputs.
 
     Parameters
     ----------
@@ -30,15 +32,21 @@ class ClusterResult:
     clusters
         Clusters as tuples of row indices.
     method
-        Clustering method name (``"maxmin"``).
-    distance_threshold
-        MaxMin Tanimoto distance threshold.
+        Clustering method name (``"minibatch_kmeans"``).
+    n_clusters
+        Number of clusters.
+    pca_variance
+        Cumulative explained variance from PCA (0..1).
+    inertia
+        MiniBatchKMeans inertia.
     """
 
     labels: np.ndarray
     clusters: list[tuple[int, ...]]
     method: str
-    distance_threshold: float
+    n_clusters: int
+    pca_variance: float
+    inertia: float
 
     @property
     def cluster_count(self) -> int:
@@ -84,7 +92,7 @@ def sanitise_fingerprints(
     n_zero = int(zero_rows.sum())
     if n_zero > 0:
         print(
-            f"[clustering] Dropping {n_zero}/{n_total} all-zero fingerprint rows "
+            f"[clustering] Dropping {n_zero}/{n_total} all-zero rows "
             f"({n_zero / n_total:.1%})"
         )
         keep = ~zero_rows
@@ -123,86 +131,26 @@ def _labels_to_clusters(labels: np.ndarray) -> list[tuple[int, ...]]:
     return clusters
 
 
-def _assign_to_nearest(
-    data: np.ndarray,
-    centroids: np.ndarray,
-    centroid_labels: np.ndarray,
-    n_jobs: int = -1,
-) -> np.ndarray:
-    """Assign each row in *data* to the nearest centroid by Tanimoto distance.
-
-    Parameters
-    ----------
-    data
-        ``(n_samples, n_features)`` full fingerprint matrix.
-    centroids
-        ``(n_centroids, n_features)`` fingerprint rows used as cluster centers.
-    centroid_labels
-        Integer labels for each centroid row.
-    n_jobs
-        Number of parallel workers (``-1`` = all cores).
-
-    Returns
-    -------
-    numpy.ndarray
-        ``(n_samples,)`` int32 cluster labels.
-    """
-
-    n_samples = data.shape[0]
-    n_chunks = max(min(n_jobs if n_jobs > 0 else _cpu_count(), 16), 1)
-    chunk_size = max(1, (n_samples + n_chunks - 1) // n_chunks)
-
-    chunks = [
-        data[start : min(start + chunk_size, n_samples)]
-        for start in range(0, n_samples, chunk_size)
-    ]
-
-    results = Parallel(n_jobs=n_jobs)(
-        delayed(_assign_chunk)(chunk, centroids, centroid_labels)
-        for chunk in chunks
-    )
-
-    return np.concatenate(results)
-
-
-def _cpu_count() -> int:
-    """Return the number of available CPU cores."""
-    return __import__("os").cpu_count() or 4
-
-
-def _assign_chunk(
-    chunk: np.ndarray,
-    centroids: np.ndarray,
-    centroid_labels: np.ndarray,
-) -> np.ndarray:
-    """Assign one chunk of rows to nearest centroids (worker function)."""
-    a_bin = chunk > 0
-    c_bin = centroids > 0
-    a_sum = a_bin.sum(axis=1, keepdims=True)
-    c_sum = c_bin.sum(axis=1)
-    intersection = chunk @ centroids.T
-    denom = np.maximum(a_sum + c_sum - intersection, 1)
-    similarity = intersection / denom
-    distance = 1.0 - similarity
-    return centroid_labels[distance.argmin(axis=1)]
-
-
 def cluster_samples(
     fingerprints: np.ndarray,
     config: dict[str, Any] | None = None,
     rows: list[dict[str, Any]] | None = None,
 ) -> ClusterResult:
-    """Cluster molecular fingerprints with MaxMin (Tanimoto distance).
+    """Cluster fingerprints with PCA → MiniBatchKMeans.
+
+    PCA reduces dimensionality first; MiniBatchKMeans then clusters the
+    reduced data using mini-batches for low memory footprint.
 
     Parameters
     ----------
     fingerprints
-        Floating-point fingerprint matrix of shape ``(n_samples, n_features)``.
+        Float fingerprint matrix ``(n_samples, n_features)``.
     config
-        Clustering configuration.  Supported keys:
+        Clustering configuration:
 
-        - ``distance_threshold`` (float, default 0.4): MaxMin Tanimoto
-          distance cutoff.  Lower values produce more clusters.
+        - ``n_clusters`` (int, default 100): number of clusters.
+        - ``pca_components`` (int, default 50): PCA target dimensionality.
+        - ``batch_size`` (int, default 10000): MiniBatchKMeans batch size.
         - ``seed`` (int, default 3407): random seed.
     rows
         Ignored; kept for backward compatibility.
@@ -210,64 +158,50 @@ def cluster_samples(
     Returns
     -------
     ClusterResult
-        MaxMin labels, cluster memberships, and threshold.
+        Cluster labels, memberships, and diagnostics.
 
     Raises
     ------
     ValueError
-        If the fingerprint matrix is empty or not two-dimensional.
+        If the fingerprint matrix is empty or not 2-D.
     """
-    _ = rows  # kept for backward compat
+    _ = rows
     cfg = config or {}
 
     if fingerprints.ndim != 2 or len(fingerprints) == 0:
         raise ValueError("fingerprints must be a non-empty two-dimensional matrix")
 
-    distance_threshold = float(cfg.get("distance_threshold", 0.4))
+    n_clusters = int(cfg.get("n_clusters", 100))
+    n_components = int(cfg.get("pca_components", 50))
+    batch_size = int(cfg.get("batch_size", 10000))
     seed = int(cfg.get("seed", 3407))
-    max_cluster_samples = int(cfg.get("max_cluster_samples", 50000))
 
-    # On large datasets, fit MaxMin on a random subset then assign the rest
-    n_total = fingerprints.shape[0]
-    if n_total > max_cluster_samples:
-        rng = np.random.default_rng(seed)
-        fit_indices = rng.choice(n_total, size=max_cluster_samples, replace=False)
-        fit_indices.sort()
-        print(
-            f"[clustering] Fitting MaxMin on {max_cluster_samples:,} / {n_total:,} "
-            f"samples ({max_cluster_samples / n_total:.1%}) ..."
-        )
-    else:
-        fit_indices = np.arange(n_total)
+    # --- PCA ----------------------------------------------------------------
+    reduced, pca_variance = pca_reduce(fingerprints, n_components, seed)
 
-    clusterer = MaxMinClustering(
-        distance_threshold=distance_threshold,
-        random_state=seed,
+    # --- MiniBatchKMeans ----------------------------------------------------
+    print(
+        f"[clustering] MiniBatchKMeans: {reduced.shape[0]:,} samples → "
+        f"{n_clusters} clusters (batch_size={batch_size:,}) ..."
     )
-    fit_labels = clusterer.fit_predict(fingerprints[fit_indices]).astype(np.int32)
-
-    if n_total > max_cluster_samples:
-        # Assign remaining samples to nearest cluster centroid
-        print(
-            f"[clustering] Assigning remaining {n_total - max_cluster_samples:,} "
-            f"samples to {fit_labels.max() + 1} clusters ..."
-        )
-        labels = _assign_to_nearest(
-            fingerprints,
-            fingerprints[fit_indices],
-            fit_labels,
-            n_jobs=int(cfg.get("n_jobs", -1)),
-        )
-    else:
-        labels = fit_labels
-
+    kmeans = MiniBatchKMeans(
+        n_clusters=n_clusters,
+        batch_size=batch_size,
+        random_state=seed,
+        n_init=3,
+        max_iter=100,
+        reassignment_ratio=0.01,
+    )
+    labels = kmeans.fit_predict(reduced).astype(np.int32)
     clusters = _labels_to_clusters(labels)
 
     return ClusterResult(
         labels=labels,
         clusters=clusters,
-        method="maxmin",
-        distance_threshold=distance_threshold,
+        method="minibatch_kmeans",
+        n_clusters=n_clusters,
+        pca_variance=pca_variance,
+        inertia=float(kmeans.inertia_),
     )
 
 
@@ -281,10 +215,9 @@ def pca_reduce(
     Parameters
     ----------
     fingerprints
-        Input matrix of shape ``(n_samples, n_features)``.
+        Input matrix ``(n_samples, n_features)``.
     n_components
-        Target number of principal components (clamped to min of the
-        matrix dimensions).
+        Target number of principal components (clamped to matrix dims).
     random_state
         Random seed.
 
@@ -309,8 +242,7 @@ def tsne_project(
     Parameters
     ----------
     data
-        Input matrix of shape ``(n_samples, n_features)``.  Typically the
-        PCA-reduced matrix or raw fingerprints.
+        Input matrix ``(n_samples, n_features)``.
     perplexity
         t-SNE perplexity (clamped to ``n_samples - 1``).
     random_state
@@ -331,11 +263,105 @@ def tsne_project(
     return tsne.fit_transform(data).astype(np.float32)
 
 
+def elbow_n_clusters(
+    fingerprints: np.ndarray,
+    ks: list[int] | None = None,
+    pca_components: int = 50,
+    batch_size: int = 10000,
+    seed: int = 3407,
+    output_path: str | Path | None = None,
+) -> list[dict[str, Any]]:
+    """Run MiniBatchKMeans for multiple *k* values and return diagnostics.
+
+    Parameters
+    ----------
+    fingerprints
+        Fingerprint matrix.
+    ks
+        Candidate *k* values.  Defaults to a geometric sweep from 10 to
+        ``sqrt(n)``.
+    pca_components
+        PCA target dimensions.
+    batch_size
+        MiniBatchKMeans batch size.
+    seed
+        Random seed.
+    output_path
+        If given, save an elbow plot to this path.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        One dict per *k* with keys ``k``, ``inertia``, ``silhouette``,
+        ``time_s``.
+    """
+    from sklearn.metrics import silhouette_score
+    import time
+
+    if ks is None:
+        n = fingerprints.shape[0]
+        ks = sorted(
+            {max(10, int(np.sqrt(n) * f)) for f in [0.1, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0]}
+        )
+
+    reduced, _ = pca_reduce(fingerprints, pca_components, seed)
+    results: list[dict[str, Any]] = []
+
+    for k in ks:
+        t0 = time.perf_counter()
+        kmeans = MiniBatchKMeans(
+            n_clusters=k, batch_size=batch_size, random_state=seed, n_init=3, max_iter=100,
+        )
+        labels = kmeans.fit_predict(reduced)
+        elapsed = time.perf_counter() - t0
+
+        inertia = float(kmeans.inertia_)
+        # Silhouette on a subsample for speed if n > 50000
+        if reduced.shape[0] > 50000:
+            rng = np.random.default_rng(seed)
+            idx = rng.choice(reduced.shape[0], size=50000, replace=False)
+            sil = float(silhouette_score(reduced[idx], labels[idx]))
+        else:
+            sil = float(silhouette_score(reduced, labels))
+
+        results.append({"k": k, "inertia": inertia, "silhouette": sil, "time_s": round(elapsed, 1)})
+        print(f"  k={k:5d}  inertia={inertia:12.1f}  silhouette={sil:.4f}  time={elapsed:.1f}s")
+
+    if output_path:
+        plot_elbow(results, output_path)
+
+    return results
+
+
+def plot_elbow(results: list[dict[str, Any]], output_path: str | Path) -> None:
+    """Plot inertia and silhouette vs *k*."""
+    ks = [r["k"] for r in results]
+    fig, ax1 = plt.subplots(figsize=(10, 5))
+
+    ax1.plot(ks, [r["inertia"] for r in results], "b-o", label="Inertia")
+    ax1.set_xlabel("n_clusters")
+    ax1.set_ylabel("Inertia", color="b")
+    ax1.tick_params(axis="y", labelcolor="b")
+
+    ax2 = ax1.twinx()
+    ax2.plot(ks, [r["silhouette"] for r in results], "r-s", label="Silhouette")
+    ax2.set_ylabel("Silhouette Score", color="r")
+    ax2.tick_params(axis="y", labelcolor="r")
+
+    fig.suptitle("Elbow Method: Inertia + Silhouette vs n_clusters")
+    fig.tight_layout()
+    output = Path(output_path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(output, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Wrote elbow plot to {output_path}")
+
+
 def plot_tsne_clusters(
     tsne_coords: np.ndarray,
     labels: np.ndarray,
     output_path: str | Path,
-    title: str = "MaxMin Clusters (t-SNE)",
+    title: str = "MiniBatchKMeans Clusters (t-SNE)",
     palette: str = "tab10",
 ) -> None:
     """Plot a 2-D t-SNE projection coloured by cluster label.

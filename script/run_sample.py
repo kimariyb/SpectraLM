@@ -1,4 +1,4 @@
-"""Cluster representative subset construction with MaxMin clustering."""
+"""Cluster representative subset construction with MiniBatchKMeans clustering."""
 
 from __future__ import annotations
 
@@ -19,6 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.config import load_config
 from src.data.clustering import (
     cluster_samples,
+    elbow_n_clusters,
     pca_reduce,
     plot_tsne_clusters,
     sanitise_fingerprints,
@@ -324,7 +325,7 @@ def select_cluster_representatives(
     fingerprints: np.ndarray,
     config: dict[str, Any] | None = None,
 ) -> ClusterSelection:
-    """Select train / test representatives from MaxMin clusters.
+    """Select train / test representatives from KMeans clusters.
 
     Diversity is enforced at three levels:
 
@@ -332,10 +333,6 @@ def select_cluster_representatives(
     2. **Scaffold disjointness** — at most ``max_per_scaffold`` molecules
        per Murcko scaffold; train and test scaffolds are disjoint.
     3. **Molecular uniqueness** — no duplicate canonical SMILES in a split.
-
-    MaxMin already guarantees that cluster *centers* are separated by at
-    least ``distance_threshold`` in Tanimoto distance, so inter-cluster
-    diversity is inherent.
 
     Parameters
     ----------
@@ -400,7 +397,7 @@ def select_cluster_representatives(
 
 
 def run(config: dict[str, Any]) -> None:
-    """Run MaxMin clustering → TSNE → representative sampling.
+    """Run MiniBatchKMeans clustering → TSNE → representative sampling.
 
     Parameters
     ----------
@@ -425,6 +422,19 @@ def run(config: dict[str, Any]) -> None:
 
     # --- Clustering ---------------------------------------------------------
     fingerprints, feature_rows = sanitise_fingerprints(fingerprints, feature_rows)
+
+    # Elbow analysis mode: scan k values and exit
+    suggest_k = config.get("suggest_n_clusters")
+    if suggest_k:
+        elbow_n_clusters(
+            fingerprints,
+            pca_components=int(config.get("pca_components", 50)),
+            batch_size=int(config.get("batch_size", 10000)),
+            seed=int(config.get("seed", 3407)),
+            output_path=config.get("elbow_output", "img/elbow.png"),
+        )
+        return
+
     result = cluster_samples(fingerprints, config, feature_rows)
 
     # --- TSNE visualisation -------------------------------------------------
@@ -448,8 +458,9 @@ def run(config: dict[str, Any]) -> None:
     # --- Report -------------------------------------------------------------
     report = dict(selection.report)
     report["method"] = result.method
-    report["distance_threshold"] = result.distance_threshold
-    report["cluster_count"] = result.cluster_count
+    report["n_clusters"] = result.n_clusters
+    report["pca_variance"] = result.pca_variance
+    report["inertia"] = result.inertia
     write_json(out_dir / "cluster_report.json", report)
     print(json.dumps(report, ensure_ascii=False, indent=2))
     print(f"Wrote {out_dir}")
