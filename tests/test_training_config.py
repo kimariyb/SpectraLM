@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import argparse
-
 from spectralm.training.train import (
     build_sft_config_kwargs,
     normalize_training_special_tokens,
@@ -62,26 +60,31 @@ def test_resolve_eos_token_from_nested_processor_tokenizer() -> None:
 
 def test_build_sft_config_kwargs_sets_valid_eos_token() -> None:
     """SFT kwargs should override TRL placeholder EOS defaults."""
-    args = argparse.Namespace(
-        output_dir="outputs/test",
-        per_device_train_batch_size=1,
-        gradient_accumulation_steps=1,
-        learning_rate=1e-5,
-        num_train_epochs=1,
-        logging_steps=1,
-        save_steps=1,
-        eval_steps=1,
-        seed=1,
-        max_seq_length=128,
-    )
-    kwargs = build_sft_config_kwargs(args, FakeSFTConfig, FakeProcessor())
+    config = {
+        "output_dir": "outputs/test",
+        "per_device_train_batch_size": 1,
+        "gradient_accumulation_steps": 1,
+        "learning_rate": 1e-5,
+        "num_train_epochs": 1,
+        "logging_steps": 1,
+        "save_steps": 1,
+        "eval_steps": 1,
+        "seed": 1,
+        "max_seq_length": 128,
+    }
+    kwargs = build_sft_config_kwargs(config, FakeSFTConfig, FakeProcessor())
     assert kwargs["eos_token"] == "<|im_end|>"
     assert kwargs["max_length"] == 128
 
 
 def test_normalize_training_special_tokens_replaces_trl_placeholder() -> None:
     """Post-construction normalization should replace TRL placeholder tokens."""
-    training_args = argparse.Namespace(eos_token="<EOS_TOKEN>", pad_token="<PAD_TOKEN>")
+
+    class _FakeArgs:
+        eos_token = "<EOS_TOKEN>"
+        pad_token = "<PAD_TOKEN>"
+
+    training_args = _FakeArgs()
     normalize_training_special_tokens(training_args, FakeProcessor())
     assert training_args.eos_token == "<|im_end|>"
     assert training_args.pad_token == "<|im_end|>"

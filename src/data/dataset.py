@@ -9,10 +9,10 @@ from typing import Any
 from PIL import Image
 from torch.utils.data import Dataset
 
-from spectralm.data.molecules import sample_selfies
-from spectralm.io import load_pickle_list
-from spectralm.spectra.render import combine_spectra
-from spectralm.training.prompts import (
+from src.data.molecules import sample_selfies
+from src.io import load_pickle_list
+from src.spectra.render import combine_spectra
+from src.training.prompts import (
     FUNCTIONAL_GROUP_PROMPTS,
     STRUCTURE_PROMPTS,
     build_reasoning_target,

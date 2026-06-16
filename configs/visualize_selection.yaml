@@ -1,6 +1,0 @@
-selected_csv: dataset/subsets/spectralm_butina_1000_300/selected_samples.csv
-fingerprints: dataset/features/morgan_fingerprints.npz
-index: dataset/features/morgan_feature_index.csv
-output: img/selection_pca.png
-max_background_points: 200000
-max_pca_fit_points: 50000

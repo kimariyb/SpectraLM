@@ -1,3 +1,0 @@
-input_csv: dataset/NMRexp_10to24_1_1004.csv
-output_pickle: dataset/NMRexp_spectra_dataset.pkl
-

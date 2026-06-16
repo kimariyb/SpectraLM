@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import argparse
 import json
+import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -13,7 +13,7 @@ from PIL import Image
 from tqdm import tqdm
 from unsloth import FastVisionModel
 
-from spectralm.config import add_config_argument, load_config
+from spectralm.config import load_config
 from spectralm.data.molecules import sample_selfies
 from spectralm.io import load_pickle_list
 from spectralm.spectra.render import combine_spectra
@@ -303,36 +303,21 @@ def generate_prediction(
     return decode_generated_text(processor, inputs, generated_ids)
 
 
-def build_arg_parser() -> argparse.ArgumentParser:
-    """Build the prediction CLI parser.
+def run(config: dict[str, Any]) -> None:
+    """Run prediction generation from a configuration dictionary.
 
-    Returns
-    -------
-    argparse.ArgumentParser
-        Configured parser.
+    Parameters
+    ----------
+    config
+        Configuration dictionary with keys ``model_path``, ``dataset``,
+        ``output``, ``mode``, ``max_samples``, and ``max_new_tokens``.
     """
-    parser = argparse.ArgumentParser(description="Generate SpectraLM predictions for ablation experiments.")
-    add_config_argument(parser)
-    parser.add_argument("--model-path", default=None, help="Base model or saved adapter path.")
-    parser.add_argument("--dataset", default=None, help="Reference pickle dataset.")
-    parser.add_argument("--output", default=None, help="Prediction JSONL path.")
-    parser.add_argument("--mode", choices=PREDICTION_MODES, default=None, help="Ablation input mode.")
-    parser.add_argument("--max-samples", type=int, default=None, help="Optional number of samples to predict.")
-    parser.add_argument("--max-new-tokens", type=int, default=None, help="Generation token budget.")
-    return parser
-
-
-def main() -> None:
-    """Run prediction generation from the command line."""
-    args = build_arg_parser().parse_args()
-    config = load_config(args.config)
-    model_path = args.model_path or config.get("model_path", "outputs/spectralm-butina-qwen3-vl-8b")
-    dataset_path = args.dataset or config.get("dataset", "dataset/subsets/spectralm_butina_1000_300/test.pkl")
-    output_path = args.output or config.get("output", "outputs/predictions.jsonl")
-    mode = args.mode or config.get("mode", "image_table_rule")
-    max_samples = args.max_samples if args.max_samples is not None else config.get("max_samples")
-    max_new_tokens = args.max_new_tokens or config.get("max_new_tokens", 768)
-
+    model_path = config.get("model_path", "outputs/spectralm-butina-qwen3-vl-8b")
+    dataset_path = config.get("dataset", "dataset/subsets/spectralm_butina_1000_300/test.pkl")
+    output_path = config.get("output", "outputs/predictions.jsonl")
+    mode = config.get("mode", "image_table_rule")
+    max_samples = config.get("max_samples")
+    max_new_tokens = config.get("max_new_tokens", 768)
 
     print(f"Loading model: {model_path}")
     model, processor = FastVisionModel.from_pretrained(model_path)
@@ -360,4 +345,7 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    if len(sys.argv) < 2:
+        print("Usage: python -m spectralm.inference.predict <config.yaml>")
+        sys.exit(1)
+    run(load_config(sys.argv[1]))

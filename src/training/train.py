@@ -2,67 +2,52 @@
 
 from __future__ import annotations
 
-import argparse
 import inspect
 import os
+import sys
 from typing import Any
 
 from spectralm.training.dataset import NmrReasoningDataset
-from spectralm.config import add_config_argument, load_config
+from spectralm.config import load_config
 from unsloth import FastVisionModel
 from unsloth.trainer import UnslothVisionDataCollator
 from trl import SFTConfig, SFTTrainer
 
-
-def build_arg_parser() -> argparse.ArgumentParser:
-    """Build the training CLI parser.
-
-    Returns
-    -------
-    argparse.ArgumentParser
-        Configured parser.
-    """
-    parser = argparse.ArgumentParser(description="Fine-tune SpectraLM with Qwen-VL and LoRA/QLoRA.")
-    add_config_argument(parser)
-    parser.add_argument("--model-path", default=None, help="Local or Hugging Face base model path.")
-    parser.add_argument("--train-dataset", default=None, help="Training pickle dataset.")
-    parser.add_argument("--eval-dataset", default=None, help="Evaluation pickle dataset.")
-    parser.add_argument("--output-dir", default=None, help="Checkpoint and adapter output directory.")
-    parser.add_argument("--max-seq-length", type=int, default=None)
-    parser.add_argument("--per-device-train-batch-size", type=int, default=None)
-    parser.add_argument("--gradient-accumulation-steps", type=int, default=None)
-    parser.add_argument("--learning-rate", type=float, default=None)
-    parser.add_argument("--num-train-epochs", type=float, default=None)
-    parser.add_argument("--logging-steps", type=int, default=None)
-    parser.add_argument("--save-steps", type=int, default=None)
-    parser.add_argument("--eval-steps", type=int, default=None)
-    parser.add_argument("--lora-r", type=int, default=None)
-    parser.add_argument("--lora-alpha", type=int, default=None)
-    parser.add_argument("--seed", type=int, default=None)
-    return parser
+_TRAINING_DEFAULTS = {
+    "model_path": "/mnt/data/kimariyb/models/Qwen3-VL-8B-Instruct",
+    "train_dataset": "dataset/subsets/spectralm_butina_1000_300/train.pkl",
+    "eval_dataset": "dataset/subsets/spectralm_butina_1000_300/test.pkl",
+    "output_dir": "outputs/spectralm-butina-qwen3-vl-8b",
+    "max_seq_length": 2048,
+    "per_device_train_batch_size": 1,
+    "gradient_accumulation_steps": 8,
+    "learning_rate": 2e-5,
+    "num_train_epochs": 3,
+    "logging_steps": 5,
+    "save_steps": 50,
+    "eval_steps": 50,
+    "lora_r": 16,
+    "lora_alpha": 16,
+    "seed": 3407,
+}
 
 
-def config_value(args: argparse.Namespace, config: dict[str, Any], name: str, default: Any) -> Any:
-    """Resolve a CLI option with config fallback.
+def _resolve_training_config(config: dict[str, Any]) -> dict[str, Any]:
+    """Merge user config with training defaults.
 
     Parameters
     ----------
-    args
-        Parsed CLI arguments.
     config
-        Loaded YAML configuration.
-    name
-        Option name.
-    default
-        Fallback value.
+        User-provided YAML configuration.
 
     Returns
     -------
-    Any
-        Resolved option value.
+    dict[str, Any]
+        Resolved configuration with defaults applied.
     """
-    value = getattr(args, name)
-    return value if value is not None else config.get(name, default)
+    merged = dict(_TRAINING_DEFAULTS)
+    merged.update(config)
+    return merged
 
 
 def configure_huggingface_env() -> None:
@@ -207,7 +192,7 @@ def normalize_training_special_tokens(training_args: Any, processing_class: Any)
 
 
 def build_sft_config_kwargs(
-    args: argparse.Namespace,
+    config: dict[str, Any],
     config_cls,
     processing_class: Any | None = None,
 ) -> dict[str, Any]:
@@ -215,8 +200,8 @@ def build_sft_config_kwargs(
 
     Parameters
     ----------
-    args
-        Resolved training arguments.
+    config
+        Resolved training configuration dictionary.
     config_cls
         TRL SFT configuration class.
     processing_class
@@ -230,23 +215,23 @@ def build_sft_config_kwargs(
     """
     supported = set(inspect.signature(config_cls.__init__).parameters)
     candidates = {
-        "output_dir": args.output_dir,
-        "per_device_train_batch_size": args.per_device_train_batch_size,
-        "gradient_accumulation_steps": args.gradient_accumulation_steps,
-        "learning_rate": args.learning_rate,
-        "num_train_epochs": args.num_train_epochs,
-        "logging_steps": args.logging_steps,
-        "save_steps": args.save_steps,
-        "eval_steps": args.eval_steps,
+        "output_dir": config["output_dir"],
+        "per_device_train_batch_size": config["per_device_train_batch_size"],
+        "gradient_accumulation_steps": config["gradient_accumulation_steps"],
+        "learning_rate": config["learning_rate"],
+        "num_train_epochs": config["num_train_epochs"],
+        "logging_steps": config["logging_steps"],
+        "save_steps": config["save_steps"],
+        "eval_steps": config["eval_steps"],
         "bf16": True,
         "remove_unused_columns": False,
         "dataset_text_field": "",
-        "seed": args.seed,
+        "seed": config["seed"],
     }
     if "max_length" in supported:
-        candidates["max_length"] = args.max_seq_length
+        candidates["max_length"] = config["max_seq_length"]
     elif "max_seq_length" in supported:
-        candidates["max_seq_length"] = args.max_seq_length
+        candidates["max_seq_length"] = config["max_seq_length"]
     if "eval_strategy" in supported:
         candidates["eval_strategy"] = "steps"
     elif "evaluation_strategy" in supported:
@@ -307,55 +292,20 @@ def build_sft_trainer_kwargs(
     return {key: value for key, value in kwargs.items() if key in supported}
 
 
-def resolve_args(args: argparse.Namespace, config: dict[str, Any]) -> argparse.Namespace:
-    """Resolve training arguments from CLI and config values.
+def run(config: dict[str, Any]) -> None:
+    """Run the VLM fine-tuning workflow from a configuration dictionary.
 
     Parameters
     ----------
-    args
-        Parsed CLI arguments.
     config
-        Loaded YAML configuration.
-
-    Returns
-    -------
-    argparse.Namespace
-        Namespace with resolved values.
+        Configuration dictionary with training parameters.
     """
-    defaults = {
-        "model_path": "/mnt/data/kimariyb/models/Qwen3-VL-8B-Instruct",
-        "train_dataset": "dataset/subsets/spectralm_butina_1000_300/train.pkl",
-        "eval_dataset": "dataset/subsets/spectralm_butina_1000_300/test.pkl",
-        "output_dir": "outputs/spectralm-butina-qwen3-vl-8b",
-        "max_seq_length": 2048,
-        "per_device_train_batch_size": 1,
-        "gradient_accumulation_steps": 8,
-        "learning_rate": 2e-5,
-        "num_train_epochs": 3,
-        "logging_steps": 5,
-        "save_steps": 50,
-        "eval_steps": 50,
-        "lora_r": 16,
-        "lora_alpha": 16,
-        "seed": 3407,
-    }
-    for name, default in defaults.items():
-        setattr(args, name, config_value(args, config, name, default))
-    return args
-
-
-def main() -> None:
-    """Run the VLM fine-tuning workflow."""
-    args = build_arg_parser().parse_args()
-    config = load_config(args.config)
-    args = resolve_args(args, config)
+    cfg = _resolve_training_config(config)
     configure_huggingface_env()
 
-
-
-    print(f"Loading base model: {args.model_path}")
+    print(f"Loading base model: {cfg['model_path']}")
     model, tokenizer = FastVisionModel.from_pretrained(
-        args.model_path,
+        cfg["model_path"],
         use_gradient_checkpointing="unsloth",
     )
     ensure_padding_token(tokenizer)
@@ -366,15 +316,15 @@ def main() -> None:
         finetune_language_layers=True,
         finetune_attention_modules=True,
         finetune_mlp_modules=True,
-        r=args.lora_r,
-        lora_alpha=args.lora_alpha,
+        r=cfg["lora_r"],
+        lora_alpha=cfg["lora_alpha"],
         lora_dropout=0,
         bias="none",
-        random_state=args.seed,
+        random_state=cfg["seed"],
     )
-    train_dataset = NmrReasoningDataset(args.train_dataset, task_probs={"structure_reasoning": 1.0})
-    eval_dataset = NmrReasoningDataset(args.eval_dataset, task_probs={"structure_reasoning": 1.0})
-    training_args = SFTConfig(**build_sft_config_kwargs(args, SFTConfig, tokenizer))
+    train_dataset = NmrReasoningDataset(cfg["train_dataset"], task_probs={"structure_reasoning": 1.0})
+    eval_dataset = NmrReasoningDataset(cfg["eval_dataset"], task_probs={"structure_reasoning": 1.0})
+    training_args = SFTConfig(**build_sft_config_kwargs(cfg, SFTConfig, tokenizer))
     normalize_training_special_tokens(training_args, tokenizer)
     if getattr(training_args, "eos_token", None):
         print(f"Using EOS token: {training_args.eos_token}")
@@ -390,9 +340,12 @@ def main() -> None:
         )
     )
     trainer.train()
-    trainer.save_model(args.output_dir)
-    tokenizer.save_pretrained(args.output_dir)
+    trainer.save_model(cfg["output_dir"])
+    tokenizer.save_pretrained(cfg["output_dir"])
 
 
 if __name__ == "__main__":
-    main()
+    if len(sys.argv) < 2:
+        print("Usage: python -m spectralm.training.train <config.yaml>")
+        sys.exit(1)
+    run(load_config(sys.argv[1]))

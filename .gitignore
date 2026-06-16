@@ -220,3 +220,10 @@ AGENTS.md
 
 # Datasets
 dataset/
+
+# Reasonix
+.reasonix/
+.codegraph/
+
+# unsloth cache
+unsloth_*/

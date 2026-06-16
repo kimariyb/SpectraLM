@@ -1,10 +1,11 @@
-"""Butina cluster representative subset construction for SpectraLM."""
+"""Cluster representative subset construction with MaxMin clustering."""
 
 from __future__ import annotations
 
-import argparse
 import json
+import os
 import random
+import sys
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,11 +13,20 @@ from typing import Any
 
 import numpy as np
 
-from spectralm.config import add_config_argument, load_config
-from spectralm.data.clustering import cluster_samples
-from spectralm.data.features import build_sample_features, save_feature_outputs
-from spectralm.data.molecules import functional_group_labels, heavy_atom_count, murcko_scaffold, sample_smiles
-from spectralm.io import load_pickle_list, write_json, write_pickle, write_rows_csv
+# Allow running from project root without PYTHONPATH
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from src.config import load_config
+from src.data.clustering import (
+    cluster_samples,
+    pca_reduce,
+    plot_tsne_clusters,
+    sanitise_fingerprints,
+    tsne_project,
+)
+from src.data.molecules import functional_group_labels, heavy_atom_count, murcko_scaffold, sample_smiles
+from src.io import load_pickle_list, write_json, write_pickle, write_rows_csv
+from script.run_featurize import build_sample_features, load_feature_outputs, save_feature_outputs
 
 
 SELECTED_FIELDS = [
@@ -31,7 +41,7 @@ SELECTED_FIELDS = [
 
 @dataclass
 class ClusterSelection:
-    """Container for Butina representative sampling outputs.
+    """Container for cluster representative sampling outputs.
 
     Parameters
     ----------
@@ -51,30 +61,12 @@ class ClusterSelection:
     selected_rows: list[dict[str, Any]]
 
 
-def row_quality_score(row: dict[str, Any]) -> tuple[int, int]:
-    """Score a structure row by coarse chemical annotation richness.
-
-    Parameters
-    ----------
-    row
-        Feature metadata row.
-
-    Returns
-    -------
-    tuple[int, int]
-        Higher-is-better quality score.
-    """
-    groups = row.get("functional_groups", [])
-    useful_groups = [group for group in groups if group not in {"invalid", "none_detected"}]
-    return (len(useful_groups), len(row.get("canonical_smiles", "")))
-
-
 def candidate_rows(
     samples: list[dict[str, Any]],
     feature_rows: list[dict[str, Any]],
     labels: np.ndarray,
 ) -> list[dict[str, Any]]:
-    """Join samples, feature metadata, and Butina labels.
+    """Join samples, feature metadata, and cluster labels.
 
     Parameters
     ----------
@@ -83,15 +75,15 @@ def candidate_rows(
     feature_rows
         Feature metadata rows.
     labels
-        Butina cluster labels.
+        Cluster labels (one per feature row).
 
     Returns
     -------
     list[dict[str, Any]]
-        Candidate rows with sample payloads.
+        Candidate rows with ``sample``, ``row``, and ``cluster`` keys.
     """
     sample_by_id = {sample.get("id"): sample for sample in samples}
-    candidates = []
+    candidates: list[dict[str, Any]] = []
     for idx, row in enumerate(feature_rows):
         sample = sample_by_id.get(row.get("id"))
         if sample is None:
@@ -101,14 +93,17 @@ def candidate_rows(
 
 
 def sort_candidates(candidates: list[dict[str, Any]], seed: int) -> list[dict[str, Any]]:
-    """Sort candidates by Butina cluster coverage and structure richness.
+    """Sort candidates by cluster coverage with random intra-cluster order.
+
+    Large clusters are prioritised; within a cluster candidates are ordered
+    randomly so both simple and complex molecules have equal probability.
 
     Parameters
     ----------
     candidates
         Candidate rows.
     seed
-        Random seed used for deterministic tie-breaking.
+        Random seed.
 
     Returns
     -------
@@ -125,7 +120,6 @@ def sort_candidates(candidates: list[dict[str, Any]], seed: int) -> list[dict[st
             key=lambda pair: (
                 -cluster_counts[pair[1]["cluster"]],
                 pair[1]["cluster"],
-                tuple(-part for part in row_quality_score(pair[1]["row"])),
                 pair[0],
             ),
         )
@@ -136,31 +130,32 @@ def filter_candidates(
     candidates: list[dict[str, Any]],
     max_heavy_atoms: int | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, int]]:
-    """Filter candidate rows by molecule-level constraints.
+    """Exclude candidates whose heavy-atom count exceeds *max_heavy_atoms*.
 
     Parameters
     ----------
     candidates
         Candidate rows.
     max_heavy_atoms
-        Optional maximum heavy atom count.
+        Maximum heavy atom count (``None`` disables the filter).
 
     Returns
     -------
     tuple[list[dict[str, Any]], dict[str, int]]
-        Filtered candidates and filter counts.
+        Filtered candidates and filter-count summary.
     """
     if max_heavy_atoms is None:
         return candidates, {"filtered_by_max_heavy_atoms": 0}
-    kept = []
-    filtered_by_heavy_atoms = 0
+
+    kept: list[dict[str, Any]] = []
+    filtered = 0
     for item in candidates:
         smiles = item["row"].get("canonical_smiles") or sample_smiles(item["sample"])
         if heavy_atom_count(smiles) > max_heavy_atoms:
-            filtered_by_heavy_atoms += 1
+            filtered += 1
             continue
         kept.append(item)
-    return kept, {"filtered_by_max_heavy_atoms": filtered_by_heavy_atoms}
+    return kept, {"filtered_by_max_heavy_atoms": filtered}
 
 
 def select_one_split(
@@ -169,63 +164,82 @@ def select_one_split(
     max_per_scaffold: int,
     blocked_scaffolds: set[str] | None = None,
 ) -> list[dict[str, Any]]:
-    """Select representatives for one split.
+    """Select *target_size* representatives via two-pass greedy.
+
+    **Pass 1 (new_cluster):** pick at most one molecule per cluster
+    (guarantees cluster coverage).  **Pass 2 (fill):** fill remaining
+    slots regardless of cluster.
+
+    Both passes respect ``max_per_scaffold`` and disallow duplicate
+    scaffolds / SMILES.
 
     Parameters
     ----------
     candidates
         Sorted candidate rows.
     target_size
-        Desired split size.
+        Desired number of selected items.
     max_per_scaffold
-        Maximum samples per scaffold.
+        Maximum items allowed per Murcko scaffold.
     blocked_scaffolds
-        Scaffolds that cannot be selected.
+        Scaffolds that must not be selected.
 
     Returns
     -------
     list[dict[str, Any]]
-        Selected candidate rows.
+        Selected candidate rows (may be fewer than *target_size* if
+        the candidate pool is exhausted).
     """
     blocked = blocked_scaffolds or set()
-    selected = []
-    scaffold_counts = Counter()
-    seen_molecules = set()
-    seen_clusters = set()
+    selected: list[dict[str, Any]] = []
+    scaffold_counts: Counter[str] = Counter()
+    seen_molecules: set[str] = set()
+    seen_clusters: set[int] = set()
+
     for pass_name in ("new_cluster", "fill"):
         for item in candidates:
             if len(selected) >= target_size:
                 return selected
+
             row = item["row"]
             scaffold = row.get("murcko_scaffold", "")
             smiles = row.get("canonical_smiles", "")
-            if scaffold in blocked or scaffold_counts[scaffold] >= max_per_scaffold or smiles in seen_molecules:
+            cluster = item["cluster"]
+
+            if (
+                scaffold in blocked
+                or scaffold_counts[scaffold] >= max_per_scaffold
+                or smiles in seen_molecules
+            ):
                 continue
-            if pass_name == "new_cluster" and item["cluster"] in seen_clusters:
+            if pass_name == "new_cluster" and cluster in seen_clusters:
                 continue
+
             selected.append(item)
             scaffold_counts[scaffold] += 1
             seen_molecules.add(smiles)
-            seen_clusters.add(item["cluster"])
+            seen_clusters.add(cluster)
+
     return selected
 
 
 def materialize_samples(items: list[dict[str, Any]], split_name: str) -> list[dict[str, Any]]:
-    """Convert selected candidates to sample dictionaries.
+    """Convert candidate items into full sample dictionaries.
 
     Parameters
     ----------
     items
         Selected candidate rows.
     split_name
-        Split name to assign.
+        Split label (``"train"`` or ``"test"``).
 
     Returns
     -------
     list[dict[str, Any]]
-        Selected sample dictionaries.
+        Sample dictionaries with ``split``, ``cluster``, and molecule
+        annotations filled in.
     """
-    output = []
+    output: list[dict[str, Any]] = []
     for item in items:
         row = item["row"]
         sample = dict(item["sample"])
@@ -233,27 +247,29 @@ def materialize_samples(items: list[dict[str, Any]], split_name: str) -> list[di
         sample["cluster"] = item["cluster"]
         sample["canonical_smiles"] = row.get("canonical_smiles", sample.get("canonical_smiles", ""))
         sample["murcko_scaffold"] = row.get("murcko_scaffold") or murcko_scaffold(sample_smiles(sample))
-        sample["functional_groups"] = row.get("functional_groups") or functional_group_labels(sample_smiles(sample))
+        sample["functional_groups"] = row.get("functional_groups") or functional_group_labels(
+            sample_smiles(sample)
+        )
         output.append(sample)
     return output
 
 
 def selected_csv_rows(items: list[dict[str, Any]], split_name: str) -> list[dict[str, Any]]:
-    """Convert selected candidate items to CSV rows.
+    """Convert candidate items to CSV-ready row dictionaries.
 
     Parameters
     ----------
     items
         Selected candidate rows.
     split_name
-        Split name.
+        Split label.
 
     Returns
     -------
     list[dict[str, Any]]
-        CSV-ready rows.
+        CSV rows with semicolon-joined functional groups.
     """
-    rows = []
+    rows: list[dict[str, Any]] = []
     for item in items:
         row = item["row"]
         rows.append(
@@ -270,7 +286,7 @@ def selected_csv_rows(items: list[dict[str, Any]], split_name: str) -> list[dict
 
 
 def split_report(train: list[dict[str, Any]], test: list[dict[str, Any]]) -> dict[str, Any]:
-    """Build a report for Butina representative subsets.
+    """Build summary statistics for a train / test split.
 
     Parameters
     ----------
@@ -282,7 +298,7 @@ def split_report(train: list[dict[str, Any]], test: list[dict[str, Any]]) -> dic
     Returns
     -------
     dict[str, Any]
-        Sampling report.
+        Per-split sample / scaffold / cluster counts.
     """
     train_scaffolds = {row.get("murcko_scaffold") for row in train}
     test_scaffolds = {row.get("murcko_scaffold") for row in test}
@@ -308,45 +324,64 @@ def select_cluster_representatives(
     fingerprints: np.ndarray,
     config: dict[str, Any] | None = None,
 ) -> ClusterSelection:
-    """Select train and test representatives from Butina clusters.
+    """Select train / test representatives from MaxMin clusters.
+
+    Diversity is enforced at three levels:
+
+    1. **Cluster coverage** — one molecule per cluster in the first pass.
+    2. **Scaffold disjointness** — at most ``max_per_scaffold`` molecules
+       per Murcko scaffold; train and test scaffolds are disjoint.
+    3. **Molecular uniqueness** — no duplicate canonical SMILES in a split.
+
+    MaxMin already guarantees that cluster *centers* are separated by at
+    least ``distance_threshold`` in Tanimoto distance, so inter-cluster
+    diversity is inherent.
 
     Parameters
     ----------
     samples
         Original samples.
     feature_rows
-        Feature metadata rows matching ``fingerprints``.
+        Feature metadata rows aligned with *fingerprints*.
     labels
-        Butina cluster labels matching ``fingerprints``.
+        Cluster label per fingerprint row.
     fingerprints
-        Morgan fingerprint matrix. Included to keep the public API explicit.
+        Fingerprint matrix (unused; kept for API compatibility).
     config
-        Selection configuration.
+        Selection configuration (``train_size``, ``test_size``,
+        ``max_per_scaffold``, ``max_heavy_atoms``, ``seed``).
 
     Returns
     -------
     ClusterSelection
         Selected splits and report.
     """
-    _ = fingerprints
+    _ = fingerprints  # kept for API compatibility
     cfg = config or {}
+
     train_size = int(cfg.get("train_size", 1000))
     test_size = int(cfg.get("test_size", 300))
     max_per_scaffold = int(cfg.get("max_per_scaffold", 1))
     max_heavy_atoms = cfg.get("max_heavy_atoms")
     max_heavy_atoms = int(max_heavy_atoms) if max_heavy_atoms is not None else None
     seed = int(cfg.get("seed", 3407))
+
     candidates, filter_report = filter_candidates(
         candidate_rows(samples, feature_rows, labels),
         max_heavy_atoms=max_heavy_atoms,
     )
     candidates = sort_candidates(candidates, seed)
+
     train_items = select_one_split(candidates, train_size, max_per_scaffold)
     train_scaffolds = {item["row"].get("murcko_scaffold", "") for item in train_items}
     remaining = [item for item in candidates if item not in train_items]
-    test_items = select_one_split(remaining, test_size, max_per_scaffold, blocked_scaffolds=train_scaffolds)
+    test_items = select_one_split(
+        remaining, test_size, max_per_scaffold, blocked_scaffolds=train_scaffolds,
+    )
+
     train = materialize_samples(train_items, "train")
     test = materialize_samples(test_items, "test")
+
     report = split_report(train, test)
     report.update(
         {
@@ -359,96 +394,69 @@ def select_cluster_representatives(
         }
     )
     report.update(filter_report)
+
     rows = selected_csv_rows(train_items, "train") + selected_csv_rows(test_items, "test")
     return ClusterSelection(train=train, test=test, report=report, selected_rows=rows)
 
 
-def build_arg_parser() -> argparse.ArgumentParser:
-    """Build the Butina sampling CLI parser.
-
-    Returns
-    -------
-    argparse.ArgumentParser
-        Configured parser.
-    """
-    parser = argparse.ArgumentParser(description="Build Morgan FP + Butina representative subsets.")
-    add_config_argument(parser)
-    parser.add_argument("--dataset", default=None, help="Input sample pickle path.")
-    parser.add_argument("--out-dir", default=None, help="Output subset directory.")
-    parser.add_argument("--train-size", type=int, default=None, help="Training subset size.")
-    parser.add_argument("--test-size", type=int, default=None, help="Test subset size.")
-    parser.add_argument("--butina-cutoff", type=float, default=None, help="Tanimoto similarity cutoff.")
-    parser.add_argument("--bucketed", action="store_true", default=None, help="Enable scaffold-stratified bucketed Butina.")
-    parser.add_argument("--max-bucket-size", type=int, default=None, help="Maximum molecules per Butina bucket.")
-    parser.add_argument("--max-heavy-atoms", type=int, default=None, help="Maximum allowed heavy atoms per molecule.")
-    parser.add_argument("--seed", type=int, default=None, help="Random seed.")
-    return parser
-
-
-def resolved_config(args: argparse.Namespace, config: dict[str, Any]) -> dict[str, Any]:
-    """Merge CLI overrides into a config dictionary.
+def run(config: dict[str, Any]) -> None:
+    """Run MaxMin clustering → TSNE → representative sampling.
 
     Parameters
     ----------
-    args
-        Parsed arguments.
     config
-        YAML configuration.
-
-    Returns
-    -------
-    dict[str, Any]
-        Resolved configuration.
+        Configuration dictionary (see ``configs/sample.yaml``).
     """
-    merged = dict(config)
-    for key in (
-        "dataset",
-        "out_dir",
-        "train_size",
-        "test_size",
-        "butina_cutoff",
-        "bucketed",
-        "max_bucket_size",
-        "max_heavy_atoms",
-        "seed",
-    ):
-        value = getattr(args, key)
-        if value is not None:
-            merged[key] = value
-    return merged
-
-
-def main(argv: list[str] | None = None) -> None:
-    """Run Butina representative sampling from the command line.
-
-    Parameters
-    ----------
-    argv
-        Optional command-line argument list.
-    """
-    args = build_arg_parser().parse_args(argv)
-    config = resolved_config(args, load_config(args.config))
     dataset = config.get("dataset", "dataset/NMRexp_spectra_dataset.pkl")
-    out_dir = Path(config.get("out_dir", "dataset/subsets/spectralm_butina_1000_300"))
-    samples = load_pickle_list(dataset)
-    fingerprints, feature_rows = build_sample_features(samples, config)
+    out_dir = Path(config.get("out_dir", "dataset/subsets/"))
     fingerprint_path = config.get("fingerprints", "dataset/features/morgan_fingerprints.npz")
     index_path = config.get("index", "dataset/features/morgan_feature_index.csv")
-    save_feature_outputs(fingerprints, feature_rows, fingerprint_path, index_path)
+
+    samples = load_pickle_list(dataset)
+
+    # --- Fingerprints -------------------------------------------------------
+    if Path(fingerprint_path).exists() and Path(index_path).exists():
+        print(f"Loading cached fingerprints from {fingerprint_path}")
+        fingerprints, feature_rows = load_feature_outputs(fingerprint_path, index_path)
+    else:
+        print("Computing fingerprints ...")
+        fingerprints, feature_rows = build_sample_features(samples, config)
+        save_feature_outputs(fingerprints, feature_rows, fingerprint_path, index_path)
+
+    # --- Clustering ---------------------------------------------------------
+    fingerprints, feature_rows = sanitise_fingerprints(fingerprints, feature_rows)
     result = cluster_samples(fingerprints, config, feature_rows)
-    selection = select_cluster_representatives(samples, feature_rows, result.labels, fingerprints, config)
+
+    # --- TSNE visualisation -------------------------------------------------
+    tsne_output = config.get("tsne_output")
+    if tsne_output:
+        pca_components = int(config.get("pca_components", 50))
+        seed = int(config.get("seed", 3407))
+        reduced, _ = pca_reduce(fingerprints, n_components=pca_components, random_state=seed)
+        coords = tsne_project(reduced, random_state=seed)
+        plot_tsne_clusters(coords, result.labels, tsne_output)
+        print(f"Wrote TSNE plot to {tsne_output}")
+
+    # --- Representative sampling --------------------------------------------
+    selection = select_cluster_representatives(
+        samples, feature_rows, result.labels, fingerprints, config,
+    )
     write_pickle(out_dir / "train.pkl", selection.train)
     write_pickle(out_dir / "test.pkl", selection.test)
     write_rows_csv(out_dir / "selected_samples.csv", selection.selected_rows, SELECTED_FIELDS)
+
+    # --- Report -------------------------------------------------------------
     report = dict(selection.report)
     report["method"] = result.method
-    report["butina_cutoff"] = result.cutoff
-    report["bucket_count"] = result.bucket_count
-    report["max_bucket_size"] = max(result.bucket_sizes or [0])
+    report["distance_threshold"] = result.distance_threshold
+    report["cluster_count"] = result.cluster_count
     write_json(out_dir / "cluster_report.json", report)
     print(json.dumps(report, ensure_ascii=False, indent=2))
     print(f"Wrote {out_dir}")
 
 
 if __name__ == "__main__":
-    main()
+    if len(sys.argv) < 2:
+        print("Usage: python script/run_sample.py <config.yaml>")
+        sys.exit(1)
+    run(load_config(sys.argv[1]))

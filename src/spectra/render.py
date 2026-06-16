@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import argparse
 import os
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -16,6 +16,7 @@ import numpy as np
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from PIL import Image
 
+from spectralm.config import load_config
 from spectralm.data.utils import parse_frequency_mhz
 from spectralm.io import write_json
 from spectralm.spectra.lineshape import add_noise, pseudo_voigt, set_spectra_axes
@@ -330,19 +331,26 @@ def demo_sample() -> dict[str, Any]:
     }
 
 
-def main() -> None:
-    """Render demo spectra from the command line."""
-    parser = argparse.ArgumentParser(description="Render demo 1H, 13C, and combined NMR spectra.")
-    parser.add_argument("--output-dir", default="img", help="Directory for rendered PNG files.")
-    args = parser.parse_args()
-    output_dir = Path(args.output_dir)
+def run(config: dict[str, Any]) -> None:
+    """Render demo spectra from a configuration dictionary.
+
+    Parameters
+    ----------
+    config
+        Configuration dictionary with optional key ``output_dir``.
+    """
+    output_dir = Path(config.get("output_dir", "img"))
     output_dir.mkdir(parents=True, exist_ok=True)
     sample = demo_sample()
     hydrogen_to_spectra(sample).save(output_dir / "spectra_1H.png")
     carbon_to_spectra(sample).save(output_dir / "spectra_13C.png")
     combine_spectra(sample).save(output_dir / "spectra_combined.png")
     write_json(output_dir / "render_demo_manifest.json", {"sample_id": sample["id"]})
+    print(f"Wrote demo spectra to {output_dir}")
 
 
 if __name__ == "__main__":
-    main()
+    if len(sys.argv) < 2:
+        print("Usage: python -m spectralm.spectra.render <config.yaml>")
+        sys.exit(1)
+    run(load_config(sys.argv[1]))

@@ -1,206 +1,151 @@
-"""Tests for Morgan fingerprint and Butina dataset construction."""
+"""Tests for MaxMin clustering of molecular fingerprints."""
 
 from __future__ import annotations
 
-import csv
-import pickle
-from pathlib import Path
+import numpy as np
 
-from spectralm.data.sampling import select_cluster_representatives
-from spectralm.data.clustering import cluster_samples
-from spectralm.data.features import build_sample_features, feature_csv_rows
-from spectralm.io import write_pickle
-
-
-def make_sample(idx: int, smiles: str, h_shifts: list[float], c_shifts: list[float]) -> dict:
-    """Build a compact paired-NMR sample for clustered sampling tests."""
-    return {
-        "id": f"sample-{idx}",
-        "smiles": smiles,
-        "canonical_smiles": smiles,
-        "selfies": "",
-        "molecular_formula": "",
-        "murcko_scaffold": f"scaffold-{idx}",
-        "1H_NMR": {
-            "peaks": [
-                {"shift": shift, "multiplicity": "s", "J": [], "integration": 1.0}
-                for shift in h_shifts
-            ]
-        },
-        "13C_NMR": {"peaks": [{"shift": shift} for shift in c_shifts]},
-    }
+from src.data.clustering import (
+    ClusterResult,
+    _labels_to_clusters,
+    cluster_samples,
+    tsne_project,
+)
 
 
-def test_build_sample_features_uses_only_structure_and_has_stable_dimensions(ethanol_sample) -> None:
-    """Feature extraction should skip invalid structures and use only structure fields."""
-    invalid = dict(ethanol_sample)
-    invalid["id"] = "invalid"
-    invalid["canonical_smiles"] = "not-a-smiles"
-    fingerprints, rows = build_sample_features(
-        [ethanol_sample, invalid],
-        {
-            "fingerprint_bits": 128,
-        },
-    )
-    assert fingerprints.shape == (1, 128)
-    assert rows[0]["id"] == "ethanol"
-    assert rows[0]["feature_status"] == "ok"
-    assert "h_peak_count" not in rows[0]
-    assert "c_peak_count" not in rows[0]
+def make_fingerprints(n_samples: int = 10, n_features: int = 64) -> np.ndarray:
+    """Build a small random fingerprint matrix for testing.
+
+    Parameters
+    ----------
+    n_samples
+        Number of rows.
+    n_features
+        Number of fingerprint bits.
+
+    Returns
+    -------
+    numpy.ndarray
+        Float32 fingerprint matrix.
+    """
+    rng = np.random.default_rng(42)
+    return rng.random((n_samples, n_features)).astype(np.float32)
 
 
-def test_cluster_samples_returns_one_label_per_feature_row() -> None:
-    """Butina clustering should return one label for each fingerprint row."""
-    samples = [
-        make_sample(0, "CCO", [1.2, 3.6], [18.0, 58.0]),
-        make_sample(1, "CCN", [1.1, 2.7], [15.0, 42.0]),
-        make_sample(2, "c1ccccc1", [7.2], [128.0]),
-    ]
-    fingerprints, _ = build_sample_features(samples, {"fingerprint_bits": 128})
-    result = cluster_samples(fingerprints, {"butina_cutoff": 0.7})
-    assert len(result.labels) == len(fingerprints)
-    assert result.method == "butina"
+# ---------------------------------------------------------------------------
+# _labels_to_clusters
+# ---------------------------------------------------------------------------
+
+
+def test_labels_to_clusters_maps_every_row_exactly_once() -> None:
+    """Every row index should appear in exactly one cluster."""
+    labels = np.array([0, 0, 1, 2, 1, 0], dtype=np.int32)
+    clusters = _labels_to_clusters(labels)
+    all_indices = {idx for cluster in clusters for idx in cluster}
+    assert all_indices == set(range(len(labels)))
+
+
+def test_labels_to_clusters_handles_single_label() -> None:
+    """Single-label arrays should produce one cluster with all indices."""
+    labels = np.array([0, 0, 0], dtype=np.int32)
+    clusters = _labels_to_clusters(labels)
+    assert len(clusters) == 1
+    assert clusters[0] == (0, 1, 2)
+
+
+# ---------------------------------------------------------------------------
+# cluster_samples (MaxMin)
+# ---------------------------------------------------------------------------
+
+
+def test_cluster_samples_returns_one_label_per_row() -> None:
+    """MaxMin should return one label for each fingerprint row."""
+    fps = make_fingerprints(8, 32)
+    result = cluster_samples(fps, {"distance_threshold": 0.3, "seed": 42})
+    assert len(result.labels) == 8
+    assert result.method == "maxmin"
+    assert result.distance_threshold == 0.3
     assert result.cluster_count >= 1
 
 
-def test_cluster_samples_can_run_scaffold_bucketed_butina() -> None:
-    """Bucketed Butina should avoid a single global distance calculation."""
-    samples = [
-        make_sample(0, "CCO", [1.2, 3.6], [18.0, 58.0]),
-        make_sample(1, "CCN", [1.1, 2.7], [15.0, 42.0]),
-        make_sample(2, "CCCl", [1.5, 3.4], [20.0, 45.0]),
-        make_sample(3, "c1ccccc1", [7.2], [128.0]),
-        make_sample(4, "Cc1ccccc1", [2.3, 7.2], [21.0, 128.0]),
-    ]
-    fingerprints, rows = build_sample_features(samples, {"fingerprint_bits": 128})
-    result = cluster_samples(
-        fingerprints,
-        {
-            "butina_cutoff": 0.7,
-            "bucketed": True,
-            "max_bucket_size": 2,
-        },
-        rows,
+def test_cluster_samples_lower_threshold_more_clusters() -> None:
+    """Lower distance threshold should produce more (or equal) clusters."""
+    fps = make_fingerprints(20, 32)
+    r_lo = cluster_samples(fps, {"distance_threshold": 0.1, "seed": 1})
+    r_hi = cluster_samples(fps, {"distance_threshold": 0.9, "seed": 1})
+    assert r_lo.cluster_count >= r_hi.cluster_count
+
+
+def test_cluster_samples_identical_fps_same_cluster() -> None:
+    """Identical fingerprints should be assigned to the same cluster."""
+    fps = np.array([
+        [1, 0, 1, 0, 0],
+        [1, 0, 1, 0, 0],
+        [0, 1, 0, 1, 0],
+    ], dtype=np.float32)
+    result = cluster_samples(fps, {"distance_threshold": 0.5, "seed": 0})
+    assert result.labels[0] == result.labels[1]
+    assert result.labels[2] != result.labels[0]
+
+
+def test_cluster_samples_ignores_rows_parameter() -> None:
+    """The rows parameter should be accepted but ignored (backward compat)."""
+    fps = make_fingerprints(6, 16)
+    result = cluster_samples(fps, {"distance_threshold": 0.5}, rows=[{"id": "x"}])
+    assert result.cluster_count >= 1
+
+
+def test_cluster_samples_raises_on_empty() -> None:
+    """Empty fingerprint arrays should raise ValueError."""
+    import pytest
+    with pytest.raises(ValueError):
+        cluster_samples(np.empty((0, 64)))
+
+
+def test_cluster_samples_deterministic_with_seed() -> None:
+    """Same seed should produce identical labels."""
+    fps = make_fingerprints(12, 32)
+    r1 = cluster_samples(fps, {"distance_threshold": 0.3, "seed": 99})
+    r2 = cluster_samples(fps, {"distance_threshold": 0.3, "seed": 99})
+    assert np.array_equal(r1.labels, r2.labels)
+
+
+# ---------------------------------------------------------------------------
+# tsne_project
+# ---------------------------------------------------------------------------
+
+
+def test_tsne_project_returns_2d() -> None:
+    """t-SNE should reduce data to (n_samples, 2)."""
+    data = make_fingerprints(20, 32)
+    coords = tsne_project(data, random_state=1)
+    assert coords.shape == (20, 2)
+    assert coords.dtype == np.float32
+    assert np.isfinite(coords).all()
+
+
+def test_tsne_project_clamps_perplexity() -> None:
+    """Perplexity larger than n_samples should be clamped to n_samples-1."""
+    data = make_fingerprints(5, 16)
+    coords = tsne_project(data, perplexity=100.0, random_state=1)
+    assert coords.shape == (5, 2)
+    assert np.isfinite(coords).all()
+
+
+# ---------------------------------------------------------------------------
+# ClusterResult
+# ---------------------------------------------------------------------------
+
+
+def test_cluster_result_fields() -> None:
+    """ClusterResult should expose labels, clusters, method, threshold, count."""
+    labels = np.array([0, 0, 1, 1, 2, 3], dtype=np.int32)
+    clusters = _labels_to_clusters(labels)
+    result = ClusterResult(
+        labels=labels,
+        clusters=clusters,
+        method="maxmin",
+        distance_threshold=0.4,
     )
-    assert len(result.labels) == len(fingerprints)
-    assert result.method == "bucketed_butina"
-    assert result.bucket_count >= 3
-    assert max(result.bucket_sizes) <= 2
-
-
-def test_cluster_representatives_respect_sizes_and_scaffold_disjoint() -> None:
-    """Cluster representative selection should satisfy split sizes without scaffold overlap."""
-    samples = [
-        make_sample(0, "CCO", [1.2, 3.6], [18.0, 58.0]),
-        make_sample(1, "CCN", [1.1, 2.7], [15.0, 42.0]),
-        make_sample(2, "CCCl", [1.5, 3.4], [20.0, 45.0]),
-        make_sample(3, "c1ccccc1", [7.2], [128.0]),
-        make_sample(4, "C1CCCCC1", [1.4], [27.0]),
-        make_sample(5, "CC(=O)O", [2.1], [20.0, 178.0]),
-    ]
-    fingerprints, rows = build_sample_features(samples, {"fingerprint_bits": 64})
-    labels = cluster_samples(fingerprints, {"butina_cutoff": 0.85}).labels
-    selected = select_cluster_representatives(
-        samples,
-        rows,
-        labels,
-        fingerprints,
-        {
-            "train_size": 3,
-            "test_size": 2,
-            "max_per_scaffold": 1,
-            "seed": 11,
-        },
-    )
-    assert len(selected.train) == 3
-    assert len(selected.test) == 2
-    assert {row["murcko_scaffold"] for row in selected.train}.isdisjoint(
-        {row["murcko_scaffold"] for row in selected.test}
-    )
-    assert selected.report["scaffold_overlap_train_test"] == 0
-
-
-def test_cluster_representatives_respect_max_heavy_atoms() -> None:
-    """Representative selection should exclude molecules above the heavy atom limit."""
-    samples = [
-        make_sample(0, "CCO", [1.2, 3.6], [18.0, 58.0]),
-        make_sample(1, "CCN", [1.1, 2.7], [15.0, 42.0]),
-        make_sample(2, "CCCCCCCCCCCC", [1.2], [30.0]),
-    ]
-    fingerprints, rows = build_sample_features(samples, {"fingerprint_bits": 64})
-    labels = cluster_samples(fingerprints, {"butina_cutoff": 0.7}).labels
-    selected = select_cluster_representatives(
-        samples,
-        rows,
-        labels,
-        fingerprints,
-        {
-            "train_size": 2,
-            "test_size": 1,
-            "max_heavy_atoms": 3,
-            "seed": 13,
-        },
-    )
-    selected_smiles = {row["canonical_smiles"] for row in selected.train + selected.test}
-    assert "CCCCCCCCCCCC" not in selected_smiles
-    assert selected.report["max_heavy_atoms"] == 3
-    assert selected.report["filtered_by_max_heavy_atoms"] == 1
-
-
-def test_feature_csv_rows_are_csv_serializable(ethanol_sample, tmp_path: Path) -> None:
-    """Feature metadata rows should be serializable to CSV."""
-    _, rows = build_sample_features([ethanol_sample], {"fingerprint_bits": 64})
-    csv_rows = feature_csv_rows(rows)
-    output = tmp_path / "features.csv"
-    with output.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=list(csv_rows[0]))
-        writer.writeheader()
-        writer.writerows(csv_rows)
-    assert output.read_text(encoding="utf-8").startswith("row_index,id,canonical_smiles")
-
-
-def test_cluster_sample_cli_writes_subset_outputs(tmp_path: Path, ethanol_sample) -> None:
-    """The cluster sampling CLI should write train/test subsets and reports."""
-    from spectralm.data.sampling import main
-
-    samples = []
-    for idx, smiles in enumerate(["CCO", "CCN", "CCCl", "c1ccccc1"]):
-        sample = dict(ethanol_sample)
-        sample["id"] = f"cli-{idx}"
-        sample["canonical_smiles"] = smiles
-        sample["smiles"] = smiles
-        sample["murcko_scaffold"] = f"cli-scaffold-{idx}"
-        samples.append(sample)
-    dataset = tmp_path / "dataset.pkl"
-    config = tmp_path / "cluster.yaml"
-    out_dir = tmp_path / "subset"
-    features = tmp_path / "features.npz"
-    index = tmp_path / "feature_index.csv"
-    write_pickle(dataset, samples)
-    config.write_text(
-        "\n".join(
-            [
-                f"dataset: {dataset}",
-                f"fingerprints: {features}",
-                f"index: {index}",
-                f"out_dir: {out_dir}",
-                "train_size: 2",
-                "test_size: 1",
-                "butina_cutoff: 0.8",
-                "fingerprint_bits: 64",
-                "seed: 5",
-            ]
-        ),
-        encoding="utf-8",
-    )
-    main(["--config", str(config)])
-    with (out_dir / "train.pkl").open("rb") as handle:
-        train = pickle.load(handle)
-    with (out_dir / "test.pkl").open("rb") as handle:
-        test = pickle.load(handle)
-    assert len(train) == 2
-    assert len(test) == 1
-    assert features.exists()
-    assert index.exists()
-    assert (out_dir / "selected_samples.csv").exists()
-    assert (out_dir / "cluster_report.json").exists()
+    assert result.cluster_count == 4
+    assert result.method == "maxmin"
+    assert result.distance_threshold == 0.4

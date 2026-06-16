@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import argparse
 import json
 import re
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -12,7 +12,7 @@ import selfies as sf
 from rdkit import Chem, DataStructs
 from rdkit.Chem import AllChem
 
-from spectralm.config import add_config_argument, load_config
+from spectralm.config import load_config
 from spectralm.data.molecules import canonicalize_smiles, functional_group_labels, sample_smiles
 from spectralm.data.utils import peak_count
 from spectralm.io import load_pickle_list, write_json
@@ -324,29 +324,17 @@ def load_prediction_texts(path: str | Path) -> list[str]:
     return prediction_path.read_text(encoding="utf-8").splitlines()
 
 
-def build_arg_parser() -> argparse.ArgumentParser:
-    """Build the evaluation CLI parser.
+def run(config: dict[str, Any]) -> None:
+    """Run evaluation from a configuration dictionary.
 
-    Returns
-    -------
-    argparse.ArgumentParser
-        Configured parser.
+    Parameters
+    ----------
+    config
+        Configuration dictionary with keys ``predictions``, ``references``, and ``output``.
     """
-    parser = argparse.ArgumentParser(description="Evaluate SpectraLM structure predictions.")
-    add_config_argument(parser)
-    parser.add_argument("--predictions", default=None, help="Prediction text, JSON, or JSONL path.")
-    parser.add_argument("--references", default=None, help="Reference sample pickle path.")
-    parser.add_argument("--output", default=None, help="Output JSON report path.")
-    return parser
-
-
-def main() -> None:
-    """Run evaluation from the command line."""
-    args = build_arg_parser().parse_args()
-    config = load_config(args.config)
-    predictions_path = args.predictions or config.get("predictions", "outputs/predictions.jsonl")
-    references_path = args.references or config.get("references", "dataset/subsets/spectralm_butina_1000_300/test.pkl")
-    output_path = args.output or config.get("output", "outputs/evaluation_report.json")
+    predictions_path = config.get("predictions", "outputs/predictions.jsonl")
+    references_path = config.get("references", "dataset/subsets/spectralm_butina_1000_300/test.pkl")
+    output_path = config.get("output", "outputs/evaluation_report.json")
     predictions = load_prediction_texts(predictions_path)
     references = load_pickle_list(references_path)
     report = evaluate_predictions(predictions, references)
@@ -356,4 +344,7 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    if len(sys.argv) < 2:
+        print("Usage: python -m spectralm.evaluation.metrics <config.yaml>")
+        sys.exit(1)
+    run(load_config(sys.argv[1]))
