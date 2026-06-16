@@ -7,7 +7,8 @@ from typing import Any
 
 import numpy as np
 
-from spectralm.data.utils import normalize_multiplicity, parse_couplings
+from src.data.utils import normalize_multiplicity, parse_couplings
+
 
 MULTIPLET_SPLITS: dict[str, list[int]] = {
     "s": [],
@@ -60,10 +61,12 @@ def apply_splitting(
     binomial = [comb(equivalent_protons, idx) for idx in range(line_count)]
     new_positions: list[float] = []
     new_heights: list[float] = []
+    
     for position, height in zip(positions, heights):
         for idx in range(line_count):
             new_positions.append(position + (idx - equivalent_protons / 2) * coupling_ppm)
             new_heights.append(height * binomial[idx])
+            
     return new_positions, new_heights
 
 
@@ -137,24 +140,32 @@ def multiplet_peaks(
     couplings_ppm = couplings_to_ppm(couplings, frequency_mhz)
     line_width_multiplier = 1.0
     multiplicity_norm = normalize_multiplicity(multiplicity)
+    
     if multiplicity_norm.startswith(BROAD_PREFIX):
         line_width_multiplier = BROAD_LINE_WIDTH_MULTIPLIER
         core = multiplicity_norm[len(BROAD_PREFIX) :]
         multiplicity_norm = core if core else "s"
+        
     if multiplicity_norm == "m" or multiplicity_norm not in MULTIPLET_SPLITS:
         subpeak_count = int(rng.integers(7, 15))
         span = max(couplings_ppm[0] if couplings_ppm else 0.025, 0.015)
         positions = rng.uniform(shift_center - span, shift_center + span, subpeak_count)
         heights = rng.uniform(0.4, 1.0, subpeak_count)
+        
         return positions.tolist(), heights.tolist(), line_width_multiplier * 2.0
+    
     split_sequence = MULTIPLET_SPLITS[multiplicity_norm]
+    
     if not split_sequence:
         return [shift_center], [1.0], line_width_multiplier
+    
     positions = [shift_center]
     heights = [1.0]
+    
     for idx, equivalent_protons in enumerate(split_sequence):
         positions, heights = apply_splitting(
             positions, heights, get_coupling(couplings_ppm, idx), equivalent_protons
         )
+        
     return positions, heights, line_width_multiplier
 

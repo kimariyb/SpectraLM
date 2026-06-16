@@ -12,6 +12,7 @@ os.environ.setdefault("XDG_CACHE_HOME", str(Path(tempfile.gettempdir()) / "spect
 import numpy as np
 from matplotlib import ticker
 
+
 def lorentzian(x: np.ndarray, x0: float, line_width: float) -> np.ndarray:
     """Calculate a Lorentzian line shape.
 
