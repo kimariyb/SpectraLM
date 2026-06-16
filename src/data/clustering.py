@@ -15,7 +15,7 @@ import numpy as np
 import seaborn as sns
 from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
-
+from joblib import Parallel, delayed
 from skfp.clustering import MaxMinClustering
 
 
@@ -127,6 +127,7 @@ def _assign_to_nearest(
     data: np.ndarray,
     centroids: np.ndarray,
     centroid_labels: np.ndarray,
+    n_jobs: int = -1,
 ) -> np.ndarray:
     """Assign each row in *data* to the nearest centroid by Tanimoto distance.
 
@@ -138,34 +139,52 @@ def _assign_to_nearest(
         ``(n_centroids, n_features)`` fingerprint rows used as cluster centers.
     centroid_labels
         Integer labels for each centroid row.
+    n_jobs
+        Number of parallel workers (``-1`` = all cores).
 
     Returns
     -------
     numpy.ndarray
         ``(n_samples,)`` int32 cluster labels.
     """
-    labels = np.empty(data.shape[0], dtype=np.int32)
-    chunk_size = 20000
 
-    for start in range(0, data.shape[0], chunk_size):
-        end = min(start + chunk_size, data.shape[0])
-        chunk = data[start:end]
+    n_samples = data.shape[0]
+    n_chunks = max(min(n_jobs if n_jobs > 0 else _cpu_count(), 16), 1)
+    chunk_size = max(1, (n_samples + n_chunks - 1) // n_chunks)
 
-        # Compute Tanimoto distance matrix: chunk × centroids
-        # Tanimoto(a,b) = (a·b) / (|a|+|b| - a·b)
-        # Distance = 1 - similarity
-        a_bin = chunk > 0
-        c_bin = centroids > 0
-        a_sum = a_bin.sum(axis=1, keepdims=True)  # (chunk, 1)
-        c_sum = c_bin.sum(axis=1)                   # (centroids,)
-        intersection = chunk @ centroids.T           # (chunk, centroids)
-        # Avoid division by zero
-        denom = np.maximum(a_sum + c_sum - intersection, 1)
-        similarity = intersection / denom
-        distance = 1.0 - similarity
-        labels[start:end] = centroid_labels[distance.argmin(axis=1)]
+    chunks = [
+        data[start : min(start + chunk_size, n_samples)]
+        for start in range(0, n_samples, chunk_size)
+    ]
 
-    return labels
+    results = Parallel(n_jobs=n_jobs)(
+        delayed(_assign_chunk)(chunk, centroids, centroid_labels)
+        for chunk in chunks
+    )
+
+    return np.concatenate(results)
+
+
+def _cpu_count() -> int:
+    """Return the number of available CPU cores."""
+    return __import__("os").cpu_count() or 4
+
+
+def _assign_chunk(
+    chunk: np.ndarray,
+    centroids: np.ndarray,
+    centroid_labels: np.ndarray,
+) -> np.ndarray:
+    """Assign one chunk of rows to nearest centroids (worker function)."""
+    a_bin = chunk > 0
+    c_bin = centroids > 0
+    a_sum = a_bin.sum(axis=1, keepdims=True)
+    c_sum = c_bin.sum(axis=1)
+    intersection = chunk @ centroids.T
+    denom = np.maximum(a_sum + c_sum - intersection, 1)
+    similarity = intersection / denom
+    distance = 1.0 - similarity
+    return centroid_labels[distance.argmin(axis=1)]
 
 
 def cluster_samples(
@@ -233,7 +252,12 @@ def cluster_samples(
             f"[clustering] Assigning remaining {n_total - max_cluster_samples:,} "
             f"samples to {fit_labels.max() + 1} clusters ..."
         )
-        labels = _assign_to_nearest(fingerprints, fingerprints[fit_indices], fit_labels)
+        labels = _assign_to_nearest(
+            fingerprints,
+            fingerprints[fit_indices],
+            fit_labels,
+            n_jobs=int(cfg.get("n_jobs", -1)),
+        )
     else:
         labels = fit_labels
 
