@@ -260,6 +260,7 @@ def tsne_project(
         n_components=2,
         perplexity=effective_perp,
         random_state=random_state,
+        verbose=1
     )
     return tsne.fit_transform(data).astype(np.float32)
 
