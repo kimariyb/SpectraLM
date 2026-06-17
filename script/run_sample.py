@@ -159,69 +159,200 @@ def filter_candidates(
     return kept, {"filtered_by_max_heavy_atoms": filtered}
 
 
-def select_one_split(
+
+
+def _sample_from_cluster(
+    cluster_items: list[dict[str, Any]],
+    pca_coords: np.ndarray,
+    n_pick: int,
+) -> list[dict[str, Any]]:
+    """Pick *n_pick* molecules from a single cluster.
+
+    1. **Centroid** — molecule closest to the cluster mean in PCA space.
+    2. **MaxMin** — remaining picks via manual MaxMin on Euclidean distance.
+
+    Parameters
+    ----------
+    cluster_items
+        Candidate items belonging to one cluster.
+    pca_coords
+        PCA-reduced matrix indexed by ``row_index``.
+    n_pick
+        Number of molecules to select.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        Selected items.
+    """
+    if not cluster_items or n_pick <= 0:
+        return []
+
+    n_pick = min(n_pick, len(cluster_items))
+    ridx = np.array([int(c["row"]["row_index"]) for c in cluster_items])
+    coords = pca_coords[ridx]  # (n_items, n_components)
+
+    selected_pos: list[int] = []
+    unselected = list(range(len(coords)))
+
+    # --- Centroid pick ---
+    centroid = coords.mean(axis=0, keepdims=True)
+    dists_to_centroid = np.linalg.norm(coords - centroid, axis=1)
+    first = int(np.argmin(dists_to_centroid))
+    selected_pos.append(first)
+    unselected.remove(first)
+
+    # --- MaxMin picks ---
+    unsel_coords = coords[unselected]
+    sel_coords = coords[selected_pos]
+
+    for _ in range(n_pick - 1):
+        if not unselected:
+            break
+        # dists: (n_unselected, n_selected)
+        dists = np.linalg.norm(
+            unsel_coords[:, None, :] - sel_coords[None, :, :], axis=2,
+        )
+        min_dists = dists.min(axis=1)
+        best = int(np.argmax(min_dists))
+        selected_pos.append(unselected[best])
+        unselected.pop(best)
+        # Rebuild arrays for next iteration
+        unsel_coords = coords[unselected]
+        sel_coords = coords[selected_pos]
+
+    return [cluster_items[p] for p in selected_pos]
+
+
+def _sample_all_clusters(
     candidates: list[dict[str, Any]],
-    target_size: int,
+    pca_coords: np.ndarray,
+    labels: np.ndarray,
+    n_per_cluster: int,
+    seed: int,
     max_per_scaffold: int,
     blocked_scaffolds: set[str] | None = None,
 ) -> list[dict[str, Any]]:
-    """Select *target_size* representatives via two-pass greedy.
-
-    **Pass 1 (new_cluster):** pick at most one molecule per cluster
-    (guarantees cluster coverage).  **Pass 2 (fill):** fill remaining
-    slots regardless of cluster.
-
-    Both passes respect ``max_per_scaffold`` and disallow duplicate
-    scaffolds / SMILES.
+    """Sample *n_per_cluster* molecules from every cluster.
 
     Parameters
     ----------
     candidates
-        Sorted candidate rows.
-    target_size
-        Desired number of selected items.
+        All candidate rows.
+    pca_coords
+        PCA-reduced matrix indexed by ``row_index``.
+    labels
+        Cluster label per fingerprint row.
+    n_per_cluster
+        Number of molecules to pick per cluster.
+    seed
+        Random seed (unused; kept for API compatibility).
     max_per_scaffold
-        Maximum items allowed per Murcko scaffold.
+        Max per scaffold (enforced post-hoc).
+    blocked_scaffolds
+        Off-limits scaffolds.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        Selected items across all clusters.
+    """
+    _ = seed
+    blocked = blocked_scaffolds or set()
+
+    # Group candidates by cluster
+    by_cluster: dict[int, list[dict[str, Any]]] = {}
+    for item in candidates:
+        by_cluster.setdefault(item["cluster"], []).append(item)
+
+    selected: list[dict[str, Any]] = []
+    scaffold_counts: Counter[str] = Counter()
+    seen_molecules: set[str] = set()
+
+    for cluster_id in sorted(by_cluster):
+        items = by_cluster[cluster_id]
+
+        # Filter out blocked scaffolds / seen molecules within this cluster
+        eligible = []
+        for item in items:
+            row = item["row"]
+            scaffold = row.get("murcko_scaffold", "")
+            smiles = row.get("canonical_smiles", "")
+            if scaffold in blocked:
+                continue
+            if scaffold_counts[scaffold] >= max_per_scaffold:
+                continue
+            if smiles in seen_molecules:
+                continue
+            eligible.append(item)
+
+        picks = _sample_from_cluster(eligible, pca_coords, n_per_cluster)
+
+        for item in picks:
+            row = item["row"]
+            scaffold_counts[row.get("murcko_scaffold", "")] += 1
+            seen_molecules.add(row.get("canonical_smiles", ""))
+
+        selected.extend(picks)
+
+    return selected
+
+
+def select_one_split(
+    candidates: list[dict[str, Any]],
+    target_size: int,
+    max_per_scaffold: int,
+    pca_coords: np.ndarray,
+    seed: int,
+    labels: np.ndarray,
+    blocked_scaffolds: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Select *target_size* representatives.
+
+    Each cluster contributes up to *n_per_cluster* molecules
+    (centroid + MaxMin picks within that cluster).
+
+    Parameters
+    ----------
+    candidates
+        All candidate rows.
+    target_size
+        Desired number of items.
+    max_per_scaffold
+        Max per Murcko scaffold.
+    pca_coords
+        PCA-reduced matrix indexed by ``row_index``.
+    seed
+        Random seed.
+    labels
+        Cluster label per fingerprint row.
     blocked_scaffolds
         Scaffolds that must not be selected.
 
     Returns
     -------
     list[dict[str, Any]]
-        Selected candidate rows (may be fewer than *target_size* if
-        the candidate pool is exhausted).
+        Selected items.
     """
-    blocked = blocked_scaffolds or set()
-    selected: list[dict[str, Any]] = []
-    scaffold_counts: Counter[str] = Counter()
-    seen_molecules: set[str] = set()
-    seen_clusters: set[int] = set()
+    n_clusters = int(labels.max()) + 1
+    n_per_cluster = max(1, target_size // max(n_clusters, 1))
 
-    for pass_name in ("new_cluster", "fill"):
-        for item in candidates:
-            if len(selected) >= target_size:
-                return selected
+    result = _sample_all_clusters(
+        candidates, pca_coords, labels, n_per_cluster, seed,
+        max_per_scaffold, blocked_scaffolds,
+    )
 
-            row = item["row"]
-            scaffold = row.get("murcko_scaffold", "")
-            smiles = row.get("canonical_smiles", "")
-            cluster = item["cluster"]
+    # If we fell short, run a second pass with doubled quota
+    if len(result) < target_size:
+        already_picked = {id(item["row"].get("id", "")) for item in result}
+        remaining = [c for c in candidates if c["row"].get("id", "") not in already_picked]
+        extra = _sample_all_clusters(
+            remaining, pca_coords, labels, max(1, n_per_cluster * 2), seed,
+            max_per_scaffold, blocked_scaffolds,
+        )
+        result.extend(extra[: target_size - len(result)])
 
-            if (
-                scaffold in blocked
-                or scaffold_counts[scaffold] >= max_per_scaffold
-                or smiles in seen_molecules
-            ):
-                continue
-            if pass_name == "new_cluster" and cluster in seen_clusters:
-                continue
-
-            selected.append(item)
-            scaffold_counts[scaffold] += 1
-            seen_molecules.add(smiles)
-            seen_clusters.add(cluster)
-
-    return selected
+    return result[:target_size]
 
 
 def materialize_samples(items: list[dict[str, Any]], split_name: str) -> list[dict[str, Any]]:
@@ -355,13 +486,18 @@ def select_cluster_representatives(
     """
     _ = fingerprints  # kept for API compatibility
     cfg = config or {}
+    seed = int(cfg.get("seed", 3407))
+
+    # PCA reduction for MaxMin fill
+    from src.data.clustering import pca_reduce
+    pca_components = int(cfg.get("pca_components", 50))
+    pca_coords, _ = pca_reduce(fingerprints, n_components=pca_components, random_state=seed)
 
     train_size = int(cfg.get("train_size", 1000))
     test_size = int(cfg.get("test_size", 300))
     max_per_scaffold = int(cfg.get("max_per_scaffold", 1))
     max_heavy_atoms = cfg.get("max_heavy_atoms")
     max_heavy_atoms = int(max_heavy_atoms) if max_heavy_atoms is not None else None
-    seed = int(cfg.get("seed", 3407))
 
     candidates, filter_report = filter_candidates(
         candidate_rows(samples, feature_rows, labels),
@@ -369,11 +505,14 @@ def select_cluster_representatives(
     )
     candidates = sort_candidates(candidates, seed)
 
-    train_items = select_one_split(candidates, train_size, max_per_scaffold)
+    train_items = select_one_split(
+        candidates, train_size, max_per_scaffold, pca_coords, seed, labels,
+    )
     train_scaffolds = {item["row"].get("murcko_scaffold", "") for item in train_items}
     remaining = [item for item in candidates if item not in train_items]
     test_items = select_one_split(
-        remaining, test_size, max_per_scaffold, blocked_scaffolds=train_scaffolds,
+        remaining, test_size, max_per_scaffold, pca_coords, seed, labels,
+        blocked_scaffolds=train_scaffolds,
     )
 
     train = materialize_samples(train_items, "train")
@@ -428,7 +567,7 @@ def run(config: dict[str, Any]) -> None:
     if suggest_k:
         elbow_n_clusters(
             fingerprints,
-            pca_components=int(config.get("pca_components", 50)),
+            pca_components=int(config.get("pca_components", 10)),
             batch_size=int(config.get("batch_size", 10000)),
             seed=int(config.get("seed", 3407)),
             output_path=config.get("elbow_output", "img/elbow.png"),

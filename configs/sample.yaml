@@ -4,7 +4,7 @@ index: dataset/features/morgan_feature_index.csv
 out_dir: dataset/subsets/
 train_size: 1000
 test_size: 200
-n_clusters: 555
+n_clusters: 1000
 pca_components: 50
 batch_size: 10000
 max_per_scaffold: 1
