@@ -1,2 +1,2 @@
-"""Training datasets and fine-tuning entrypoints for SpectraLM."""
+"""Inference utilities for SpectraLM model predictions."""
 

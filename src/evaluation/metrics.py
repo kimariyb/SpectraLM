@@ -12,10 +12,10 @@ import selfies as sf
 from rdkit import Chem, DataStructs
 from rdkit.Chem import AllChem
 
-from spectralm.config import load_config
-from spectralm.data.molecules import canonicalize_smiles, functional_group_labels, sample_smiles
-from spectralm.data.utils import peak_count
-from spectralm.io import load_pickle_list, write_json
+from src.config import load_config
+from src.data.molecules import canonicalize_smiles, functional_group_labels, sample_smiles
+from src.data.utils import peak_count
+from src.io import load_pickle_list, write_json
 
 
 def extract_final_smiles(text: str) -> str | None:

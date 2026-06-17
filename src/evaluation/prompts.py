@@ -79,6 +79,8 @@ def build_structure_prompt(sample: dict[str, Any], prompt: str) -> str:
     formula = molecule_formula(sample.get("canonical_smiles")) or "unknown"
     return prompt.format(peak_tables=_format_peak_tables(sample, formula))
 
+# TODO: Prompt templates — structure reasoning prediction
+# 暂时不实现
 
 
 def _format_peak_tables(sample: dict[str, Any], formula: str) -> str:

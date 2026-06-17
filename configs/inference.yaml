@@ -1,0 +1,20 @@
+# SpectraLM inference configuration
+# Usage: python -m src.training.inference configs/inference.yaml
+
+# ---------------------------------------------------------------------------
+# Model
+# ---------------------------------------------------------------------------
+model_path: outputs/spectralm-qwen3-vl-8b
+max_seq_length: 8192
+
+# ---------------------------------------------------------------------------
+# Data
+# ---------------------------------------------------------------------------
+test_dataset: dataset/subsets/test.pkl       # path to test pickle file
+max_samples: null                             # null = all samples, or set a number
+max_new_tokens: 256
+
+# ---------------------------------------------------------------------------
+# Output
+# ---------------------------------------------------------------------------
+output: outputs/predictions.jsonl

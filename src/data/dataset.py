@@ -32,7 +32,7 @@ from PIL import Image as PILImage
 from src.io import load_pickle_list
 from src.spectra.render import carbon_to_spectra, hydrogen_to_spectra
 from src.data.molecules import sample_smiles, sample_fg
-from src.training.prompts import (
+from src.evaluation.prompts import (
     FUNCTIONAL_GROUP_PROMPTS,
     STRUCTURE_PROMPTS,
     build_structure_prompt,
@@ -46,7 +46,7 @@ _DEFAULT_TASK_PROBS: dict[str, float] = {
     "functional_group": 0.2,
 }
 
-# Atomic I/O helpers
+
 def _safe_cache_key(sample_id: str) -> str:
     """Sanitize a sample ID into a filesystem-safe cache key.
 
