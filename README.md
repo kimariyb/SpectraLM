@@ -1,4 +1,5 @@
-# SpectraLM：基于多模态大模型与谱学推理的 NMR 分子结构解析系统
+# SpectraLM：Multimodal Large Language Models for NMR-based Molecular Structure Prediction
+
 
 ![toc](img/workflow.png)
 

@@ -1,5 +1,22 @@
 """LoRA/QLoRA fine-tuning entrypoint for SpectraLM VLM experiments.
 
+Supports two configuration styles (see ``configs/train.yaml``):
+
+**Style A — directory + split (new):**
+
+.. code-block:: yaml
+
+    dataset_dir: dataset/subsets
+    # train_ds = NmrReasoningDataset(dataset_dir, split="train", ...)
+
+**Style B — explicit file paths (legacy):**
+
+.. code-block:: yaml
+
+    train_dataset: dataset/subsets/train.pkl
+    eval_dataset:  dataset/subsets/test.pkl
+    # train_ds = NmrReasoningDataset(train_dataset)
+
 Usage::
 
     python -m src.training.train configs/train.yaml
@@ -26,9 +43,9 @@ def main(config: dict[str, Any]) -> None:
         Configuration with keys for model, dataset, LoRA, and training
         hyperparameters.  See ``configs/train.yaml`` for the full schema.
     """
-    # ------------------------------------------------------------------
+    seed: int = config.get("seed", 3407)
+
     # 1. Load model
-    # ------------------------------------------------------------------
     model, tokenizer = FastVisionModel.from_pretrained(
         config["model_path"],
         max_seq_length=config.get("max_seq_length", 8192),
@@ -36,9 +53,7 @@ def main(config: dict[str, Any]) -> None:
         use_gradient_checkpointing="unsloth",
     )
 
-    # ------------------------------------------------------------------
     # 2. Apply LoRA adapters
-    # ------------------------------------------------------------------
     model = FastVisionModel.get_peft_model(
         model,
         finetune_vision_layers=True,
@@ -49,7 +64,7 @@ def main(config: dict[str, Any]) -> None:
         lora_alpha=config.get("lora_alpha", 16),
         lora_dropout=0,
         bias="none",
-        random_state=config.get("seed", 3407),
+        random_state=seed,
         use_rslora=False,
         loftq_config=None,
     )
@@ -60,7 +75,6 @@ def main(config: dict[str, Any]) -> None:
     dataset_dir: str = config["dataset_dir"]
     train_size: int = config.get("train_size", 1000)
     cache_version: str | None = config.get("cache_version")
-    seed: int = config.get("seed", 42)
 
     train_ds = NmrReasoningDataset(
         dataset_dir,
@@ -83,10 +97,35 @@ def main(config: dict[str, Any]) -> None:
     print(f"Train samples: {len(train_ds)}")
     print(f"Eval samples:  {len(eval_ds)}")
 
-    # ------------------------------------------------------------------
     # 4. Train
-    # ------------------------------------------------------------------
     FastVisionModel.for_training(model)
+
+    # Allow either max_steps or num_train_epochs (mutually exclusive in SFTConfig)
+    sft_kwargs: dict[str, Any] = {
+        "per_device_train_batch_size": config.get("per_device_train_batch_size", 4),
+        "gradient_accumulation_steps": config.get("gradient_accumulation_steps", 4),
+        "warmup_steps": config.get("warmup_steps", 5),
+        "learning_rate": float(config.get("learning_rate", 2e-4)),
+        "logging_steps": config.get("logging_steps", 1),
+        "eval_steps": config.get("eval_steps", 50),
+        "save_steps": config.get("save_steps", 50),
+        "optim": "adamw_8bit",
+        "weight_decay": float(config.get("weight_decay", 0.001)),
+        "lr_scheduler_type": "linear",
+        "seed": seed,
+        "output_dir": config.get("output_dir", "outputs"),
+        "report_to": "none",
+        # Vision fine-tuning requirements
+        "remove_unused_columns": False,
+        "dataset_text_field": "",
+        "dataset_kwargs": {"skip_prepare_dataset": True},
+        "max_length": config.get("max_length", 2048),
+    }
+
+    if "num_train_epochs" in config:
+        sft_kwargs["num_train_epochs"] = float(config["num_train_epochs"])
+    else:
+        sft_kwargs["max_steps"] = config.get("max_steps", 30)
 
     trainer = SFTTrainer(
         model=model,
@@ -94,27 +133,7 @@ def main(config: dict[str, Any]) -> None:
         data_collator=UnslothVisionDataCollator(model, tokenizer),
         train_dataset=train_ds,
         eval_dataset=eval_ds,
-        args=SFTConfig(
-            per_device_train_batch_size=config.get("per_device_train_batch_size", 4),
-            gradient_accumulation_steps=config.get("gradient_accumulation_steps", 4),
-            warmup_steps=config.get("warmup_steps", 5),
-            max_steps=config.get("max_steps", 30),
-            learning_rate=float(config.get("learning_rate", 2e-4)),
-            logging_steps=config.get("logging_steps", 1),
-            eval_steps=config.get("eval_steps", 50),
-            save_steps=config.get("save_steps", 50),
-            optim="adamw_8bit",
-            weight_decay=float(config.get("weight_decay", 0.001)),
-            lr_scheduler_type="linear",
-            seed=seed,
-            output_dir=config.get("output_dir", "outputs"),
-            report_to="none",
-            # Vision fine-tuning requirements
-            remove_unused_columns=False,
-            dataset_text_field="",
-            dataset_kwargs={"skip_prepare_dataset": True},
-            max_length=config.get("max_length", 2048),
-        ),
+        args=SFTConfig(**sft_kwargs),
     )
 
     trainer.train()

@@ -3,6 +3,17 @@
 Renders NMR spectra images from test samples, builds structure-elucidation
 prompts, generates SMILES predictions, and writes results as JSONL.
 
+Supports four ablation modes that progressively remove input information:
+
+``image_table_rule``
+    Full input: spectra images + peak tables + NMR interpretation rules.
+``image_table``
+    Images + peak tables, no rules.
+``table_only``
+    Peak tables only, no images.
+``image_only``
+    Images only, no peak tables or rules.
+
 Usage::
 
     python -m src.training.inference configs/inference.yaml
@@ -22,13 +33,51 @@ from tqdm import tqdm
 from src.config import load_config
 from src.io import load_pickle_list
 from src.spectra.render import hydrogen_to_spectra, carbon_to_spectra
-from src.training.prompts import STRUCTURE_PROMPTS, build_structure_prompt
+from src.evaluation.prompts import STRUCTURE_PROMPTS, build_structure_prompt
 from unsloth import FastVisionModel
 
+# Constants
+PREDICTION_MODES = ("image_table_rule", "image_table", "table_only", "image_only")
 
-# ---------------------------------------------------------------------------
-# Image rendering
-# ---------------------------------------------------------------------------
+
+def _strip_peak_tables(prompt: str) -> str:
+    """Remove peak-table sections while keeping the task contract.
+
+    Parameters
+    ----------
+    prompt
+        Full image-table-rule prompt text.
+
+    Returns
+    -------
+    str
+        Prompt without explicit peak-table blocks.
+    """
+    sections = prompt.split("\n\n")
+    return "\n\n".join(
+        section for section in sections if "NMR Peak Table" not in section
+    )
+
+
+def _strip_rule_prompt(prompt: str) -> str:
+    """Remove the NMR rule-hint section from a prompt.
+
+    Parameters
+    ----------
+    prompt
+        Full prompt text.
+
+    Returns
+    -------
+    str
+        Prompt text without the rule-hint section.
+    """
+    sections = prompt.split("\n\n")
+    return "\n\n".join(
+        section
+        for section in sections
+        if not section.startswith("NMR rules to consider")
+    )
 
 
 def _render_images(sample: dict[str, Any]) -> tuple[PILImage.Image, PILImage.Image]:
@@ -44,13 +93,16 @@ def _render_images(sample: dict[str, Any]) -> tuple[PILImage.Image, PILImage.Ima
     tuple[PILImage.Image, PILImage.Image]
         RGB images for 1H and 13C spectra respectively.
     """
-    h_img = hydrogen_to_spectra(sample, snr=500.0)
-    c_img = carbon_to_spectra(sample, snr=300.0)
+    h_img = hydrogen_to_spectra(sample, snr=500.0, seed=42)
+    c_img = carbon_to_spectra(sample, snr=300.0, seed=42)
 
-    for img in (h_img, c_img):
-        if not isinstance(img, PILImage.Image):
-            img = PILImage.fromarray(img)
-        img = img.convert("RGB")  # no-op if already RGB
+    if not isinstance(h_img, PILImage.Image):
+        h_img = PILImage.fromarray(h_img)
+    h_img = h_img.convert("RGB")
+
+    if not isinstance(c_img, PILImage.Image):
+        c_img = PILImage.fromarray(c_img)
+    c_img = c_img.convert("RGB")
 
     return h_img, c_img
 
@@ -62,32 +114,53 @@ def _render_images(sample: dict[str, Any]) -> tuple[PILImage.Image, PILImage.Ima
 
 def _build_prediction_messages(
     sample: dict[str, Any],
+    mode: str,
 ) -> list[dict[str, Any]]:
-    """Build chat-format messages with rendered images and a structure prompt.
+    """Build chat-format messages for one ablation mode.
 
     Parameters
     ----------
     sample
         Normalized SpectraLM sample dictionary.
+    mode
+        One of ``"image_table_rule"``, ``"image_table"``, ``"table_only"``,
+        or ``"image_only"``.
 
     Returns
     -------
     list[dict[str, Any]]
-        Chat messages with ``"user"`` role containing images and text.
+        Chat messages with ``"user"`` role.
+
+    Raises
+    ------
+    ValueError
+        If *mode* is not a recognised ablation mode.
     """
-    h_img, c_img = _render_images(sample)
+    if mode not in PREDICTION_MODES:
+        raise ValueError(
+            f"Unknown prediction mode: {mode!r}.  "
+            f"Must be one of {PREDICTION_MODES}."
+        )
+
     prompt = build_structure_prompt(sample, prompt=STRUCTURE_PROMPTS[0])
 
-    return [
-        {
-            "role": "user",
-            "content": [
-                {"type": "image", "image": h_img},
-                {"type": "image", "image": c_img},
-                {"type": "text", "text": prompt},
-            ],
-        }
-    ]
+    # Ablation: progressively strip information
+    if mode in ("image_table", "table_only"):
+        prompt = _strip_rule_prompt(prompt)
+    if mode == "image_only":
+        prompt = _strip_rule_prompt(_strip_peak_tables(prompt))
+
+    content: list[dict[str, Any]] = []
+
+    # Include images only when the mode requests them
+    if mode in ("image_table_rule", "image_table", "image_only"):
+        h_img, c_img = _render_images(sample)
+        content.append({"type": "image", "image": h_img})
+        content.append({"type": "image", "image": c_img})
+
+    content.append({"type": "text", "text": prompt})
+
+    return [{"role": "user", "content": content}]
 
 
 # ---------------------------------------------------------------------------
@@ -143,20 +216,7 @@ def _encode_messages(
 
 
 def _move_to_device(inputs: dict[str, Any], device: torch.device) -> dict[str, Any]:
-    """Move tensor values in a dict to the target device.
-
-    Parameters
-    ----------
-    inputs
-        Processor output mapping (may contain tensors and non-tensors).
-    device
-        Target PyTorch device.
-
-    Returns
-    -------
-    dict[str, Any]
-        Mapping with tensors moved to *device*.
-    """
+    """Move tensor values in a dict to the target device."""
     return {
         key: value.to(device) if hasattr(value, "to") else value
         for key, value in inputs.items()
@@ -168,22 +228,7 @@ def _decode_generated(
     inputs: dict[str, Any],
     generated_ids: torch.Tensor,
 ) -> str:
-    """Decode only the newly generated tokens (excluding the prompt).
-
-    Parameters
-    ----------
-    processor
-        Multimodal processor whose ``.tokenizer`` or itself can decode.
-    inputs
-        Generation inputs containing ``input_ids``.
-    generated_ids
-        Full token sequence returned by ``model.generate``.
-
-    Returns
-    -------
-    str
-        Decoded assistant output text.
-    """
+    """Decode only the newly generated tokens (excluding the prompt)."""
     prompt_len = inputs["input_ids"].shape[-1]
     new_tokens = generated_ids[:, prompt_len:]
     tokenizer = getattr(processor, "tokenizer", processor)
@@ -195,10 +240,11 @@ def _predict_one(
     model: Any,
     processor: Any,
     sample: dict[str, Any],
+    mode: str,
     device: torch.device,
     max_new_tokens: int,
 ) -> str:
-    """Generate a SMILES prediction for a single sample.
+    """Generate a SMILES prediction for a single sample under one ablation mode.
 
     Parameters
     ----------
@@ -208,6 +254,8 @@ def _predict_one(
         Matching multimodal processor.
     sample
         Normalized SpectraLM sample dictionary.
+    mode
+        Ablation input mode (see :data:`PREDICTION_MODES`).
     device
         Target device for tensors.
     max_new_tokens
@@ -218,7 +266,7 @@ def _predict_one(
     str
         Raw generated text (typically a SMILES string).
     """
-    messages = _build_prediction_messages(sample)
+    messages = _build_prediction_messages(sample, mode)
     inputs = _encode_messages(processor, messages)
     inputs = _move_to_device(inputs, device)
 
@@ -246,16 +294,23 @@ def main(config: dict[str, Any]) -> None:
     ----------
     config
         Configuration with keys ``model_path``, ``test_dataset``,
-        ``output``, ``max_new_tokens``, and optionally ``max_samples``
-        and ``max_seq_length``.
+        ``mode``, ``output``, ``max_new_tokens``, and optionally
+        ``max_samples`` and ``max_seq_length``.
     """
     model_path: str = config["model_path"]
     test_dataset: str = config["test_dataset"]
+    mode: str = config.get("mode", "image_table_rule")
     output_path: str = config.get("output", "outputs/predictions.jsonl")
     max_new_tokens: int = int(config.get("max_new_tokens", 256))
     max_samples: int | None = config.get("max_samples")
     if max_samples is not None:
         max_samples = int(max_samples)
+
+    if mode not in PREDICTION_MODES:
+        raise ValueError(
+            f"Unknown prediction mode: {mode!r}.  "
+            f"Must be one of {PREDICTION_MODES}."
+        )
 
     # -- Load model ---------------------------------------------------------
     print(f"Loading model: {model_path}")
@@ -272,12 +327,14 @@ def main(config: dict[str, Any]) -> None:
     samples = load_pickle_list(test_dataset)
     if max_samples is not None:
         samples = samples[:max_samples]
-    print(f"Loaded {len(samples)} test samples")
+    print(f"Loaded {len(samples)} test samples  |  mode = {mode}")
 
     # -- Generate predictions -----------------------------------------------
     results: list[dict[str, str]] = []
-    for sample in tqdm(samples, desc="Predicting"):
-        prediction = _predict_one(model, processor, sample, device, max_new_tokens)
+    for sample in tqdm(samples, desc=f"Predicting ({mode})"):
+        prediction = _predict_one(
+            model, processor, sample, mode, device, max_new_tokens
+        )
         ref_smiles = (
             sample.get("canonical_smiles")
             or sample.get("smiles")
@@ -287,6 +344,7 @@ def main(config: dict[str, Any]) -> None:
             "id": str(sample.get("id", "")),
             "prediction": prediction,
             "reference_smiles": str(ref_smiles),
+            "mode": mode,
         })
 
     # -- Write output -------------------------------------------------------
