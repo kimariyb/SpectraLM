@@ -1,12 +1,18 @@
-"""Proton NMR multiplicity splitting simulation."""
+"""Line-shape functions and plotting utilities for NMR spectra."""
 
 from __future__ import annotations
 
+import os
+import tempfile
+import numpy as np
+
+from pathlib import Path
 from math import comb
 from typing import Any
 
-import numpy as np
-
+os.environ.setdefault("MPLCONFIGDIR", str(Path(tempfile.gettempdir()) / "spectralm-matplotlib"))
+os.environ.setdefault("XDG_CACHE_HOME", str(Path(tempfile.gettempdir()) / "spectralm-cache"))
+    
 from src.data.utils import normalize_multiplicity, parse_couplings
 
 
@@ -31,6 +37,92 @@ MULTIPLET_SPLITS: dict[str, list[int]] = {
 BROAD_PREFIX = "br"
 BROAD_LINE_WIDTH_MULTIPLIER = 3.5
 DEFAULT_J_PPM = 0.010
+
+
+def lorentzian(x: np.ndarray, x0: float, line_width: float) -> np.ndarray:
+    """Calculate a Lorentzian line shape.
+
+    Parameters
+    ----------
+    x
+        Chemical shift axis.
+    x0
+        Peak center.
+    line_width
+        Full width at half maximum.
+
+    Returns
+    -------
+    np.ndarray
+        Line intensity values.
+    """
+    return (line_width / 2) ** 2 / ((x - x0) ** 2 + (line_width / 2) ** 2)
+
+
+def gaussian(x: np.ndarray, x0: float, sigma: float) -> np.ndarray:
+    """Calculate a Gaussian line shape.
+
+    Parameters
+    ----------
+    x
+        Chemical shift axis.
+    x0
+        Peak center.
+    sigma
+        Standard deviation.
+
+    Returns
+    -------
+    np.ndarray
+        Line intensity values.
+    """
+    return np.exp(-0.5 * ((x - x0) / sigma) ** 2)
+
+
+def pseudo_voigt(x: np.ndarray, x0: float, line_width: float, eta: float = 0.5) -> np.ndarray:
+    """Calculate a pseudo-Voigt line shape.
+
+    Parameters
+    ----------
+    x
+        Chemical shift axis.
+    x0
+        Peak center.
+    line_width
+        Full width at half maximum.
+    eta
+        Lorentzian mixing fraction.
+
+    Returns
+    -------
+    np.ndarray
+        Mixed line intensity values.
+    """
+    sigma = line_width / (2 * np.sqrt(2 * np.log(2)))
+    return eta * lorentzian(x, x0, line_width) + (1 - eta) * gaussian(x, x0, sigma)
+
+
+def add_noise(y: np.ndarray, snr: float = 80.0, rng: np.random.Generator | None = None) -> np.ndarray:
+    """Add Gaussian white noise to a spectrum.
+
+    Parameters
+    ----------
+    y
+        Spectrum intensity array.
+    snr
+        Signal-to-noise ratio.
+    rng
+        Optional NumPy random generator.
+
+    Returns
+    -------
+    np.ndarray
+        Noisy spectrum intensity array.
+    """
+    generator = rng or np.random.default_rng(42)
+    peak = np.max(np.abs(y))
+    sigma_noise = peak / snr if snr > 0 else 0.0
+    return y + generator.normal(0, sigma_noise, size=y.shape)
 
 
 def apply_splitting(
@@ -168,4 +260,3 @@ def multiplet_peaks(
         )
         
     return positions, heights, line_width_multiplier
-

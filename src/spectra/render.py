@@ -1,9 +1,12 @@
-"""Render normalized 1H and 13C NMR samples as spectrum images."""
+"""Render normalized 1H and 13C NMR samples as spectrum images.
+
+Images are produced at a fixed resolution of ``WIDTH_PX`` × ``HEIGHT_PX``
+(1280×720 at 100 DPI) via the Agg backend — no display required.
+"""
 
 from __future__ import annotations
 
 import os
-import sys
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -11,21 +14,25 @@ from typing import Any
 os.environ.setdefault("MPLCONFIGDIR", str(Path(tempfile.gettempdir()) / "spectralm-matplotlib"))
 os.environ.setdefault("XDG_CACHE_HOME", str(Path(tempfile.gettempdir()) / "spectralm-cache"))
 
-import matplotlib.pyplot as plt
+import matplotlib
+matplotlib.use("Agg")  # headless — must precede any other matplotlib import
+
+import matplotlib.pyplot as _plt  # only for figure cleanup in figure_to_image
 import numpy as np
+from matplotlib.axes import Axes
 from matplotlib.backends.backend_agg import FigureCanvasAgg
+from matplotlib.figure import Figure
+from matplotlib import ticker
 from PIL import Image
 
 from src.data.utils import parse_frequency_mhz
 from src.io import write_json
-from src.spectra.lineshape import add_noise, pseudo_voigt, set_spectra_axes
-from src.spectra.splitting import multiplet_peaks
+from src.spectra.utils import add_noise, pseudo_voigt, multiplet_peaks
 
 
 DPI = 100
-WIDTH_PX = 1200
-HEIGHT_PX = 500
-COMBINED_HEIGHT_PX = 1200
+WIDTH_PX = 1280
+HEIGHT_PX = 720
 
 
 def compute_1h(
@@ -126,7 +133,7 @@ def compute_13c(
 
 
 def draw_1h(
-    ax: plt.Axes,
+    ax: Axes,
     x_axis: np.ndarray,
     intensity: np.ndarray,
     ppm_min: float = 0.0,
@@ -166,7 +173,7 @@ def draw_1h(
 
 
 def draw_13c(
-    ax: plt.Axes,
+    ax: Axes,
     x_axis: np.ndarray,
     intensity: np.ndarray,
     ppm_min: float = 0.0,
@@ -205,7 +212,30 @@ def draw_13c(
         )
 
 
-def figure_to_image(fig: plt.Figure) -> Image.Image:
+def set_spectra_axes(ax: Axes, ppm_min: float, ppm_max: float) -> None:
+    """Apply standard NMR axis styling.
+
+    Parameters
+    ----------
+    ax
+        Matplotlib axes object.
+    ppm_min
+        Minimum chemical shift value.
+    ppm_max
+        Maximum chemical shift value.
+    """
+    ax.set_xlim(ppm_max, ppm_min)
+    ax.set_xlabel("Chemical Shift (ppm)", fontsize=16, labelpad=6)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.spines["left"].set_visible(False)
+    ax.tick_params(axis="x", direction="out", length=4, labelsize=14)
+    ax.tick_params(axis="y", left=False, labelleft=False)
+    ax.xaxis.set_major_locator(ticker.MultipleLocator(10 if ppm_max > 100 else 1))
+    ax.xaxis.set_minor_locator(ticker.MultipleLocator(2 if ppm_max > 100 else 0.2))
+
+
+def figure_to_image(fig: Figure) -> Image.Image:
     """Convert a Matplotlib figure to an RGB PIL image.
 
     Parameters
@@ -222,12 +252,16 @@ def figure_to_image(fig: plt.Figure) -> Image.Image:
     canvas.draw()
     buffer = np.asarray(canvas.buffer_rgba())
     image = Image.fromarray(buffer[..., :3]).convert("RGB")
-    plt.close(fig)
-    
+    _plt.close(fig)
+
     return image
 
 
-def hydrogen_to_spectra(sample: dict[str, Any], snr: float = 500.0) -> Image.Image:
+def hydrogen_to_spectra(
+    sample: dict[str, Any],
+    snr: float = 500.0,
+    seed: int | None = None,
+) -> Image.Image:
     """Render a standalone 1H NMR spectrum image.
 
     Parameters
@@ -236,21 +270,30 @@ def hydrogen_to_spectra(sample: dict[str, Any], snr: float = 500.0) -> Image.Ima
         Normalized sample dictionary.
     snr
         Signal-to-noise ratio.
+    seed
+        Optional seed for reproducible rendering.  When ``None`` (default)
+        system entropy is used, producing slightly different line-width
+        jitter on every call.
 
     Returns
     -------
     PIL.Image.Image
-        Rendered spectrum image.
+        RGB spectrum image at ``WIDTH_PX`` × ``HEIGHT_PX`` pixels.
     """
-    rng = np.random.default_rng()
+    rng = np.random.default_rng(seed)
     x_axis, intensity, _ = compute_1h(sample, snr, rng)
-    fig, ax = plt.subplots(figsize=(WIDTH_PX / DPI, HEIGHT_PX / DPI), dpi=DPI)
+    fig = Figure(figsize=(WIDTH_PX / DPI, HEIGHT_PX / DPI), dpi=DPI)
+    ax = fig.add_subplot(111)
     draw_1h(ax, x_axis, intensity)
-    
+    fig.subplots_adjust(left=0.08, right=0.98, bottom=0.15, top=0.95)
     return figure_to_image(fig)
 
 
-def carbon_to_spectra(sample: dict[str, Any], snr: float = 500.0) -> Image.Image:
+def carbon_to_spectra(
+    sample: dict[str, Any],
+    snr: float = 500.0,
+    seed: int | None = None,
+) -> Image.Image:
     """Render a standalone 13C NMR spectrum image.
 
     Parameters
@@ -259,17 +302,22 @@ def carbon_to_spectra(sample: dict[str, Any], snr: float = 500.0) -> Image.Image
         Normalized sample dictionary.
     snr
         Signal-to-noise ratio.
+    seed
+        Optional seed for reproducible rendering.  When ``None`` (default)
+        system entropy is used, producing slightly different line-width
+        jitter on every call.
 
     Returns
     -------
     PIL.Image.Image
-        Rendered spectrum image.
+        RGB spectrum image at ``WIDTH_PX`` × ``HEIGHT_PX`` pixels.
     """
-    rng = np.random.default_rng()
+    rng = np.random.default_rng(seed)
     x_axis, intensity = compute_13c(sample, snr, rng)
-    fig, ax = plt.subplots(figsize=(WIDTH_PX / DPI, HEIGHT_PX / DPI), dpi=DPI)
+    fig = Figure(figsize=(WIDTH_PX / DPI, HEIGHT_PX / DPI), dpi=DPI)
+    ax = fig.add_subplot(111)
     draw_13c(ax, x_axis, intensity)
-    
+    fig.subplots_adjust(left=0.08, right=0.98, bottom=0.15, top=0.95)
     return figure_to_image(fig)
 
 

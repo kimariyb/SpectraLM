@@ -28,6 +28,7 @@ from typing import Any, Generator
 import numpy as np
 from datasets import Dataset, Image as HFImage
 from PIL import Image as PILImage
+from PIL.Image import Resampling
 
 from src.io import load_pickle_list
 from src.spectra.render import carbon_to_spectra, hydrogen_to_spectra
@@ -186,7 +187,7 @@ def _split_by_scaffold(
     return train if split == "train" else test
 
 
-class NmrReasoningDataset:
+class NMRSpectraInstructDataset:
     """Multitask NMR dataset backed by :class:`datasets.Dataset`.
 
     Images are pre-rendered once at construction time and stored as Arrow
@@ -227,6 +228,11 @@ class NmrReasoningDataset:
         Optional seed for the NumPy random generator.  When ``None``
         (default), system entropy is used.  Set to an integer for
         reproducible task sampling and SNR randomization.
+    image_size
+        Optional ``(width, height)`` tuple to resize rendered spectra
+        images.  When ``None`` (default), the original rendering
+        dimensions are kept.  Setting this to e.g. ``(1280, 720)``
+        standardises the input resolution for the vision encoder.
     """
 
     def __init__(
@@ -240,6 +246,7 @@ class NmrReasoningDataset:
         c_snr: float = 300.0,
         cache_version: str | None = None,
         seed: int | None = None,
+        image_size: tuple[int, int] | None = None,
     ) -> None:
         # -- sample loading --------------------------------------------------
         self._samples = _resolve_and_load_samples(dataset_path, split, train_size)
@@ -257,6 +264,7 @@ class NmrReasoningDataset:
         self._h_snr = h_snr
         self._c_snr = c_snr
         self._cache_version = cache_version
+        self._image_size = image_size
         if self._cache_dir:
             self._cache_dir.mkdir(parents=True, exist_ok=True)
             self._validate_cache()
@@ -369,6 +377,10 @@ class NmrReasoningDataset:
             image = PILImage.fromarray(image)
         image = image.convert("RGB")
 
+        # --- resize to target resolution (if configured) ------------
+        if self._image_size is not None:
+            image = image.resize(self._image_size, Resampling.LANCZOS)
+
         buf = io.BytesIO()
         image.save(buf, format="PNG")
         png_bytes = buf.getvalue()
@@ -397,6 +409,7 @@ class NmrReasoningDataset:
         current_manifest = {
             "h_snr": self._h_snr,
             "c_snr": self._c_snr,
+            "image_size": list(self._image_size) if self._image_size else None,
             "version": self._cache_version or "1",
         }
 
