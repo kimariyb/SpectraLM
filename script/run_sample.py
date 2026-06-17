@@ -31,7 +31,6 @@ from script.run_featurize import build_sample_features, load_feature_outputs, sa
 
 
 SELECTED_FIELDS = [
-    "split",
     "id",
     "cluster",
     "canonical_smiles",
@@ -46,18 +45,15 @@ class ClusterSelection:
 
     Parameters
     ----------
-    train
-        Selected training samples.
-    test
-        Selected test samples.
+    selected
+        All selected samples (single collection, split happens downstream).
     report
         Sampling report.
     selected_rows
         CSV-ready selected metadata rows.
     """
 
-    train: list[dict[str, Any]]
-    test: list[dict[str, Any]]
+    selected: list[dict[str, Any]]
     report: dict[str, Any]
     selected_rows: list[dict[str, Any]]
 
@@ -159,8 +155,6 @@ def filter_candidates(
     return kept, {"filtered_by_max_heavy_atoms": filtered}
 
 
-
-
 def _sample_from_cluster(
     cluster_items: list[dict[str, Any]],
     pca_coords: np.ndarray,
@@ -229,9 +223,7 @@ def _sample_all_clusters(
     pca_coords: np.ndarray,
     labels: np.ndarray,
     n_per_cluster: int,
-    seed: int,
     max_per_scaffold: int,
-    blocked_scaffolds: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Sample *n_per_cluster* molecules from every cluster.
 
@@ -245,21 +237,14 @@ def _sample_all_clusters(
         Cluster label per fingerprint row.
     n_per_cluster
         Number of molecules to pick per cluster.
-    seed
-        Random seed (unused; kept for API compatibility).
     max_per_scaffold
         Max per scaffold (enforced post-hoc).
-    blocked_scaffolds
-        Off-limits scaffolds.
 
     Returns
     -------
     list[dict[str, Any]]
         Selected items across all clusters.
     """
-    _ = seed
-    blocked = blocked_scaffolds or set()
-
     # Group candidates by cluster
     by_cluster: dict[int, list[dict[str, Any]]] = {}
     for item in candidates:
@@ -272,14 +257,11 @@ def _sample_all_clusters(
     for cluster_id in sorted(by_cluster):
         items = by_cluster[cluster_id]
 
-        # Filter out blocked scaffolds / seen molecules within this cluster
         eligible = []
         for item in items:
             row = item["row"]
             scaffold = row.get("murcko_scaffold", "")
             smiles = row.get("canonical_smiles", "")
-            if scaffold in blocked:
-                continue
             if scaffold_counts[scaffold] >= max_per_scaffold:
                 continue
             if smiles in seen_molecules:
@@ -305,7 +287,6 @@ def select_one_split(
     pca_coords: np.ndarray,
     seed: int,
     labels: np.ndarray,
-    blocked_scaffolds: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Select *target_size* representatives.
 
@@ -326,8 +307,6 @@ def select_one_split(
         Random seed.
     labels
         Cluster label per fingerprint row.
-    blocked_scaffolds
-        Scaffolds that must not be selected.
 
     Returns
     -------
@@ -338,44 +317,41 @@ def select_one_split(
     n_per_cluster = max(1, target_size // max(n_clusters, 1))
 
     result = _sample_all_clusters(
-        candidates, pca_coords, labels, n_per_cluster, seed,
-        max_per_scaffold, blocked_scaffolds,
+        candidates, pca_coords, labels, n_per_cluster, max_per_scaffold,
     )
 
     # If we fell short, run a second pass with doubled quota
     if len(result) < target_size:
-        already_picked = {id(item["row"].get("id", "")) for item in result}
+        already_picked = {item["row"].get("id", "") for item in result}
         remaining = [c for c in candidates if c["row"].get("id", "") not in already_picked]
         extra = _sample_all_clusters(
-            remaining, pca_coords, labels, max(1, n_per_cluster * 2), seed,
-            max_per_scaffold, blocked_scaffolds,
+            remaining, pca_coords, labels, max(1, n_per_cluster * 2), max_per_scaffold,
         )
         result.extend(extra[: target_size - len(result)])
 
     return result[:target_size]
 
 
-def materialize_samples(items: list[dict[str, Any]], split_name: str) -> list[dict[str, Any]]:
+def materialize_samples(items: list[dict[str, Any]], tag: str = "selected") -> list[dict[str, Any]]:
     """Convert candidate items into full sample dictionaries.
 
     Parameters
     ----------
     items
         Selected candidate rows.
-    split_name
-        Split label (``"train"`` or ``"test"``).
+    tag
+        Label stored in the ``split`` field.
 
     Returns
     -------
     list[dict[str, Any]]
-        Sample dictionaries with ``split``, ``cluster``, and molecule
-        annotations filled in.
+        Sample dictionaries with annotations filled in.
     """
     output: list[dict[str, Any]] = []
     for item in items:
         row = item["row"]
         sample = dict(item["sample"])
-        sample["split"] = split_name
+        sample["split"] = tag
         sample["cluster"] = item["cluster"]
         sample["canonical_smiles"] = row.get("canonical_smiles", sample.get("canonical_smiles", ""))
         sample["murcko_scaffold"] = row.get("murcko_scaffold") or murcko_scaffold(sample_smiles(sample))
@@ -386,27 +362,24 @@ def materialize_samples(items: list[dict[str, Any]], split_name: str) -> list[di
     return output
 
 
-def selected_csv_rows(items: list[dict[str, Any]], split_name: str) -> list[dict[str, Any]]:
+def selected_csv_rows(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Convert candidate items to CSV-ready row dictionaries.
 
     Parameters
     ----------
     items
         Selected candidate rows.
-    split_name
-        Split label.
 
     Returns
     -------
     list[dict[str, Any]]
-        CSV rows with semicolon-joined functional groups.
+        CSV rows.
     """
     rows: list[dict[str, Any]] = []
     for item in items:
         row = item["row"]
         rows.append(
             {
-                "split": split_name,
                 "id": row.get("id", ""),
                 "cluster": item["cluster"],
                 "canonical_smiles": row.get("canonical_smiles", ""),
@@ -417,38 +390,6 @@ def selected_csv_rows(items: list[dict[str, Any]], split_name: str) -> list[dict
     return rows
 
 
-def split_report(train: list[dict[str, Any]], test: list[dict[str, Any]]) -> dict[str, Any]:
-    """Build summary statistics for a train / test split.
-
-    Parameters
-    ----------
-    train
-        Training samples.
-    test
-        Test samples.
-
-    Returns
-    -------
-    dict[str, Any]
-        Per-split sample / scaffold / cluster counts.
-    """
-    train_scaffolds = {row.get("murcko_scaffold") for row in train}
-    test_scaffolds = {row.get("murcko_scaffold") for row in test}
-    return {
-        "train": {
-            "samples": len(train),
-            "unique_scaffolds": len(train_scaffolds),
-            "unique_clusters": len({row.get("cluster") for row in train}),
-        },
-        "test": {
-            "samples": len(test),
-            "unique_scaffolds": len(test_scaffolds),
-            "unique_clusters": len({row.get("cluster") for row in test}),
-        },
-        "scaffold_overlap_train_test": len(train_scaffolds & test_scaffolds),
-    }
-
-
 def select_cluster_representatives(
     samples: list[dict[str, Any]],
     feature_rows: list[dict[str, Any]],
@@ -456,14 +397,9 @@ def select_cluster_representatives(
     fingerprints: np.ndarray,
     config: dict[str, Any] | None = None,
 ) -> ClusterSelection:
-    """Select train / test representatives from KMeans clusters.
+    """Select representatives from clusters.
 
-    Diversity is enforced at three levels:
-
-    1. **Cluster coverage** — one molecule per cluster in the first pass.
-    2. **Scaffold disjointness** — at most ``max_per_scaffold`` molecules
-       per Murcko scaffold; train and test scaffolds are disjoint.
-    3. **Molecular uniqueness** — no duplicate canonical SMILES in a split.
+    All candidates are sampled together into a single diverse set.
 
     Parameters
     ----------
@@ -474,27 +410,24 @@ def select_cluster_representatives(
     labels
         Cluster label per fingerprint row.
     fingerprints
-        Fingerprint matrix (unused; kept for API compatibility).
+        Fingerprint matrix (used for PCA).
     config
-        Selection configuration (``train_size``, ``test_size``,
-        ``max_per_scaffold``, ``max_heavy_atoms``, ``seed``).
+        Selection configuration (``sample_size``, ``max_per_scaffold``,
+        ``max_heavy_atoms``, ``seed``).
 
     Returns
     -------
     ClusterSelection
-        Selected splits and report.
+        Selected samples and report.
     """
-    _ = fingerprints  # kept for API compatibility
     cfg = config or {}
     seed = int(cfg.get("seed", 3407))
 
-    # PCA reduction for MaxMin fill
-    from src.data.clustering import pca_reduce
+    # PCA reduction
     pca_components = int(cfg.get("pca_components", 50))
     pca_coords, _ = pca_reduce(fingerprints, n_components=pca_components, random_state=seed)
 
-    train_size = int(cfg.get("train_size", 1000))
-    test_size = int(cfg.get("test_size", 300))
+    sample_size = int(cfg.get("sample_size", 1200))
     max_per_scaffold = int(cfg.get("max_per_scaffold", 1))
     max_heavy_atoms = cfg.get("max_heavy_atoms")
     max_heavy_atoms = int(max_heavy_atoms) if max_heavy_atoms is not None else None
@@ -505,34 +438,23 @@ def select_cluster_representatives(
     )
     candidates = sort_candidates(candidates, seed)
 
-    train_items = select_one_split(
-        candidates, train_size, max_per_scaffold, pca_coords, seed, labels,
-    )
-    train_scaffolds = {item["row"].get("murcko_scaffold", "") for item in train_items}
-    remaining = [item for item in candidates if item not in train_items]
-    test_items = select_one_split(
-        remaining, test_size, max_per_scaffold, pca_coords, seed, labels,
-        blocked_scaffolds=train_scaffolds,
+    all_picks = select_one_split(
+        candidates, sample_size, max_per_scaffold, pca_coords, seed, labels,
     )
 
-    train = materialize_samples(train_items, "train")
-    test = materialize_samples(test_items, "test")
-
-    report = split_report(train, test)
-    report.update(
-        {
-            "target_train_size": train_size,
-            "target_test_size": test_size,
-            "candidate_samples": len(candidates),
-            "clusters": len(set(int(item) for item in labels)),
-            "max_per_scaffold": max_per_scaffold,
-            "max_heavy_atoms": max_heavy_atoms,
-        }
-    )
+    selected = materialize_samples(all_picks, "selected")
+    report = {
+        "target_size": sample_size,
+        "actual_size": len(selected),
+        "candidate_samples": len(candidates),
+        "clusters": len(set(int(item) for item in labels)),
+        "max_per_scaffold": max_per_scaffold,
+        "max_heavy_atoms": max_heavy_atoms,
+    }
     report.update(filter_report)
 
-    rows = selected_csv_rows(train_items, "train") + selected_csv_rows(test_items, "test")
-    return ClusterSelection(train=train, test=test, report=report, selected_rows=rows)
+    rows = selected_csv_rows(all_picks)
+    return ClusterSelection(selected=selected, report=report, selected_rows=rows)
 
 
 def run(config: dict[str, Any]) -> None:
@@ -591,13 +513,11 @@ def run(config: dict[str, Any]) -> None:
 
         # Map selected sample ids → feature row indices
         id_to_row = {row["id"]: int(row["row_index"]) for row in feature_rows}
-        train_indices = [id_to_row[s["id"]] for s in selection.train if s["id"] in id_to_row]
-        test_indices = [id_to_row[s["id"]] for s in selection.test if s["id"] in id_to_row]
-
-        plot_tsne_selection(coords, train_indices, test_indices, tsne_output)
+        sel_indices = [id_to_row[s["id"]] for s in selection.selected if s["id"] in id_to_row]
+        plot_tsne_selection(coords, sel_indices, [], tsne_output,
+                            title="Selected Molecules (t-SNE)")
         print(f"Wrote TSNE plot to {tsne_output}")
-    write_pickle(out_dir / "train.pkl", selection.train)
-    write_pickle(out_dir / "test.pkl", selection.test)
+    write_pickle(out_dir / "selected.pkl", selection.selected)
     write_rows_csv(out_dir / "selected_samples.csv", selection.selected_rows, SELECTED_FIELDS)
 
     # --- Report -------------------------------------------------------------

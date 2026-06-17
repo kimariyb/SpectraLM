@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from functools import lru_cache
 from typing import Any
 import numpy as np
 import selfies as sf
@@ -118,9 +119,17 @@ FUNCTIONAL_GROUP_SMARTS = {
     "silyl_ether": "[#6][OX2][SiX4]",                    # 硅醚
 }
 
+# Precompiled SMARTS patterns — built once at import time so
+# ``functional_group_labels`` does not re-parse ~60 SMARTS on every call.
+_PRECOMPILED_SMARTS: list[tuple[str, Chem.Mol]] = []
+for _label, _smarts in FUNCTIONAL_GROUP_SMARTS.items():
+    _pattern = Chem.MolFromSmarts(_smarts)
+    if _pattern is not None:
+        _PRECOMPILED_SMARTS.append((_label, _pattern))
 
-def sample_fg(sample: dict[str, Any]) -> list | None:
-    """Return a comma-separated functional-group list.
+
+def sample_fg(sample: dict[str, Any]) -> list[str]:
+    """Return the list of functional-group labels for a sample.
 
     Parameters
     ----------
@@ -129,8 +138,8 @@ def sample_fg(sample: dict[str, Any]) -> list | None:
 
     Returns
     -------
-    str
-        Comma-separated groups (or ``"Unknown"``).
+    list[str]
+        Functional-group labels (may be empty).
     """
     return sample.get("functional_groups", [])
 
@@ -167,6 +176,7 @@ def sample_selfies(sample: dict[str, Any]) -> str:
     return sample.get("selfies") or sample.get("SELFIES") or ""
 
 
+@lru_cache(maxsize=8192)
 def canonicalize_smiles(smiles: str | None) -> str | None:
     """Canonicalize a SMILES string with RDKit.
 
@@ -212,7 +222,7 @@ def smiles_to_selfies(smiles: str | None) -> str | None:
         return None
 
 
-def mol_from_smiles(smiles: str | None):
+def mol_from_smiles(smiles: str | None) -> Chem.Mol | None:
     """Create an RDKit molecule from SMILES.
 
     Parameters
@@ -230,6 +240,7 @@ def mol_from_smiles(smiles: str | None):
     return Chem.MolFromSmiles(str(smiles))
 
 
+@lru_cache(maxsize=8192)
 def molecule_formula(smiles: str | None) -> str | None:
     """Calculate a molecular formula from SMILES.
 
@@ -287,9 +298,8 @@ def functional_group_labels(smiles: str | None) -> list[str]:
     if mol is None:
         return ["invalid"]
     labels = []
-    for label, smarts in FUNCTIONAL_GROUP_SMARTS.items():
-        pattern = Chem.MolFromSmarts(smarts)
-        if pattern is not None and mol.HasSubstructMatch(pattern):
+    for label, pattern in _PRECOMPILED_SMARTS:
+        if mol.HasSubstructMatch(pattern):
             labels.append(label)
     return labels or ["none_detected"]
 

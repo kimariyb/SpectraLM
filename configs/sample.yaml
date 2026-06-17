@@ -2,8 +2,7 @@ dataset: dataset/NMRexp_spectra_dataset.pkl
 fingerprints: dataset/features/morgan_fingerprints.npz
 index: dataset/features/morgan_feature_index.csv
 out_dir: dataset/subsets/
-train_size: 1000
-test_size: 200
+sample_size: 2000
 n_clusters: 1000
 pca_components: 50
 batch_size: 10000

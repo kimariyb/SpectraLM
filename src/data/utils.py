@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import re
+from functools import lru_cache
 from typing import Any
 
 
@@ -105,7 +106,8 @@ def parse_couplings(couplings: Any) -> list[float]:
     return values
 
 
-def normalize_multiplicity(value: Any) -> str:
+@lru_cache(maxsize=64)
+def normalize_multiplicity(value: str | None) -> str:
     """Normalize a proton NMR multiplicity label.
 
     Parameters
