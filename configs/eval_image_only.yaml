@@ -1,3 +1,0 @@
-predictions: outputs/ablation/image_only/predictions.jsonl
-references: dataset/subsets/spectralm_butina_1000_300/test.pkl
-output: outputs/ablation/image_only/evaluation_report.json

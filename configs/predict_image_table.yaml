@@ -1,5 +1,0 @@
-model_path: outputs/spectralm-butina-qwen3-vl-8b
-dataset: dataset/subsets/spectralm_butina_1000_300/test.pkl
-output: outputs/ablation/image_table/predictions.jsonl
-mode: image_table
-max_new_tokens: 768

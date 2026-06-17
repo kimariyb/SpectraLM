@@ -119,6 +119,22 @@ FUNCTIONAL_GROUP_SMARTS = {
 }
 
 
+def sample_fg(sample: dict[str, Any]) -> list | None:
+    """Return a comma-separated functional-group list.
+
+    Parameters
+    ----------
+    sample
+        Sample dictionary.
+
+    Returns
+    -------
+    str
+        Comma-separated groups (or ``"Unknown"``).
+    """
+    return sample.get("functional_groups", [])
+
+
 def sample_smiles(sample: dict[str, Any]) -> str | None:
     """Extract the canonical SMILES from a sample dictionary.
 
