@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Any
 
 
-
 class TrainingLogger:
     """Collect and persist training / evaluation metrics.
 
@@ -23,7 +22,6 @@ class TrainingLogger:
     run_name
         Optional run name. If not provided, timestamp is used.
     """
-
     def __init__(
         self,
         output_dir: str | Path,
@@ -38,10 +36,6 @@ class TrainingLogger:
         self.train_steps: list[dict[str, Any]] = []
         self.eval_steps: list[dict[str, Any]] = []
         self.other_logs: list[dict[str, Any]] = []
-
-    # ---------------------------------------------------------------------
-    # Constructors
-    # ---------------------------------------------------------------------
 
     @classmethod
     def from_trainer(
@@ -73,10 +67,6 @@ class TrainingLogger:
 
         for entry in log_history:
             self.log_entry(entry)
-
-    # ---------------------------------------------------------------------
-    # Logging methods
-    # ---------------------------------------------------------------------
 
     def log_entry(self, entry: dict[str, Any]) -> None:
         """Route one trainer log entry to train/eval/other logs."""
@@ -130,10 +120,6 @@ class TrainingLogger:
         entry.update(extra)
         self.eval_steps.append(self._json_safe_dict(entry))
 
-    # ---------------------------------------------------------------------
-    # Summary
-    # ---------------------------------------------------------------------
-
     @property
     def final_train_loss(self) -> float | None:
         if not self.train_steps:
@@ -183,10 +169,6 @@ class TrainingLogger:
             "best_eval_loss": self.best_eval_loss,
             "best_eval_step": self.best_eval_step,
         }
-
-    # ---------------------------------------------------------------------
-    # Serialization
-    # ---------------------------------------------------------------------
 
     def to_dict(self) -> dict[str, Any]:
         """Build JSON-serializable log payload."""
@@ -252,10 +234,6 @@ class TrainingLogger:
             "train_csv": train_csv,
             "eval_csv": eval_csv,
         }
-
-    # ---------------------------------------------------------------------
-    # Internal helpers
-    # ---------------------------------------------------------------------
 
     @staticmethod
     def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
@@ -333,3 +311,5 @@ class TrainingLogger:
             }
 
         return str(value)
+    
+# TODO: class: TestingLogger

@@ -1,14 +1,15 @@
 """Prediction entrypoint for SpectraLM fine-tuned models.
 
-Renders NMR spectra images from test samples, builds structure-elucidation
-prompts, generates SMILES predictions, and writes results as JSONL.
+Loads the test split via :func:`~src.data.dataset.load_nmr_dataset`, builds
+structure-elucidation prompts using the pre-rendered spectrum images, and
+generates SMILES predictions.
 
 Supports four ablation modes that progressively remove input information:
 
 ``image_table_rule``
     Full input: spectra images + peak tables + NMR interpretation rules.
 ``image_table``
-    Images + peak tables, no rules.
+    Images + peak table.
 ``table_only``
     Peak tables only, no images.
 ``image_only``
@@ -21,344 +22,354 @@ Usage::
 
 from __future__ import annotations
 
+import itertools
 import json
+import pickle
+import random
 import sys
+import traceback
 from pathlib import Path
 from typing import Any
 
 import torch
-from PIL import Image as PILImage
 from tqdm import tqdm
 
-from src.config import TrainingLogger, load_config
-from src.io import load_pickle_list
-from src.spectra.render import hydrogen_to_spectra, carbon_to_spectra
+from src.config import load_config
+from src.data.dataset import load_nmr_dataset
 from src.evaluation.prompts import STRUCTURE_PROMPTS, build_structure_prompt
 from unsloth import FastVisionModel
-
-# Constants
-PREDICTION_MODES = ("image_table_rule", "image_table", "table_only", "image_only")
+from peft import PeftModel
 
 
-def _strip_peak_tables(prompt: str) -> str:
-    """Remove peak-table sections while keeping the task contract.
+def load_model_for_inference(
+    base_model_path: str,
+    adapter_path: str | Path | None = None,
+    max_seq_length: int = 8192,
+    load_in_4bit: bool = True,
+):
+    """Load base VLM and optionally attach a LoRA adapter.
 
     Parameters
     ----------
-    prompt
-        Full image-table-rule prompt text.
+    base_model_path
+        Path or HuggingFace repo id of the base VLM.
+    adapter_path
+        Optional path to a LoRA adapter.  When ``None``, *base_model_path*
+        is used directly as the fine-tuned model.
+    max_seq_length
+        Maximum sequence length for the tokenizer.
+    load_in_4bit
+        Whether to load in 4-bit quantisation.
 
     Returns
     -------
-    str
-        Prompt without explicit peak-table blocks.
+    tuple
+        ``(model, tokenizer)`` ready for inference.
     """
-    sections = prompt.split("\n\n")
-    return "\n\n".join(
-        section for section in sections if "NMR Peak Table" not in section
+    model, tokenizer = FastVisionModel.from_pretrained(
+        base_model_path,
+        max_seq_length=max_seq_length,
+        load_in_4bit=load_in_4bit,
+        use_gradient_checkpointing=False,
     )
 
-
-def _strip_rule_prompt(prompt: str) -> str:
-    """Remove the NMR rule-hint section from a prompt.
-
-    Parameters
-    ----------
-    prompt
-        Full prompt text.
-
-    Returns
-    -------
-    str
-        Prompt text without the rule-hint section.
-    """
-    sections = prompt.split("\n\n")
-    return "\n\n".join(
-        section
-        for section in sections
-        if not section.startswith("NMR rules to consider")
-    )
-
-
-def _render_images(sample: dict[str, Any]) -> tuple[PILImage.Image, PILImage.Image]:
-    """Render deterministic 1H and 13C spectrum images for a sample.
-
-    Parameters
-    ----------
-    sample
-        Normalized SpectraLM sample dictionary.
-
-    Returns
-    -------
-    tuple[PILImage.Image, PILImage.Image]
-        RGB images for 1H and 13C spectra respectively.
-    """
-    h_img = hydrogen_to_spectra(sample, snr=500.0, seed=42)
-    c_img = carbon_to_spectra(sample, snr=300.0, seed=42)
-
-    if not isinstance(h_img, PILImage.Image):
-        h_img = PILImage.fromarray(h_img)
-    h_img = h_img.convert("RGB")
-
-    if not isinstance(c_img, PILImage.Image):
-        c_img = PILImage.fromarray(c_img)
-    c_img = c_img.convert("RGB")
-
-    return h_img, c_img
-
-
-# ---------------------------------------------------------------------------
-# Prompt building
-# ---------------------------------------------------------------------------
-
-
-def _build_prediction_messages(
-    sample: dict[str, Any],
-    mode: str,
-) -> list[dict[str, Any]]:
-    """Build chat-format messages for one ablation mode.
-
-    Parameters
-    ----------
-    sample
-        Normalized SpectraLM sample dictionary.
-    mode
-        One of ``"image_table_rule"``, ``"image_table"``, ``"table_only"``,
-        or ``"image_only"``.
-
-    Returns
-    -------
-    list[dict[str, Any]]
-        Chat messages with ``"user"`` role.
-
-    Raises
-    ------
-    ValueError
-        If *mode* is not a recognised ablation mode.
-    """
-    if mode not in PREDICTION_MODES:
-        raise ValueError(
-            f"Unknown prediction mode: {mode!r}.  "
-            f"Must be one of {PREDICTION_MODES}."
+    if adapter_path is not None:
+        model = PeftModel.from_pretrained(
+            model,
+            str(adapter_path),
+            is_trainable=False,
         )
 
-    prompt = build_structure_prompt(sample, prompt=STRUCTURE_PROMPTS[0])
+    FastVisionModel.for_inference(model)
+    model.eval()
 
-    # Ablation: progressively strip information
-    if mode in ("image_table", "table_only"):
-        prompt = _strip_rule_prompt(prompt)
-    if mode == "image_only":
-        prompt = _strip_rule_prompt(_strip_peak_tables(prompt))
-
-    content: list[dict[str, Any]] = []
-
-    # Include images only when the mode requests them
-    if mode in ("image_table_rule", "image_table", "image_only"):
-        h_img, c_img = _render_images(sample)
-        content.append({"type": "image", "image": h_img})
-        content.append({"type": "image", "image": c_img})
-
-    content.append({"type": "text", "text": prompt})
-
-    return [{"role": "user", "content": content}]
+    return model, tokenizer
 
 
-# ---------------------------------------------------------------------------
-# Model helpers
-# ---------------------------------------------------------------------------
-
-
-def _encode_messages(
-    processor: Any,
-    messages: list[dict[str, Any]],
-) -> dict[str, Any]:
-    """Encode chat messages into model inputs.
+def extract_sample_from_row(row: dict[str, Any]) -> tuple[list[Any], dict[str, Any]]:
+    """Extract images and deserialised sample dict from a raw dataset row.
 
     Parameters
     ----------
-    processor
-        HuggingFace multimodal processor.
-    messages
-        Chat messages with optional ``"image"`` content parts.
+    row
+        Raw Arrow row with ``"h_image"``, ``"c_image"``, and
+        ``"sample_pickle"`` columns.
 
     Returns
     -------
-    dict[str, Any]
-        Tensor inputs ready for ``model.generate``.
+    tuple[list[Any], dict[str, Any]]
+        ``(images, sample)`` — *images* is a list of 0–2 PIL images;
+        *sample* is the deserialised sample dictionary.
     """
-    try:
-        return processor.apply_chat_template(
-            messages,
-            tokenize=True,
-            add_generation_prompt=True,
-            return_tensors="pt",
-            return_dict=True,
-        )
-    except TypeError:
-        # Fallback for processors without native chat-template tokenization
-        text = processor.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True
-        )
-        images = [
-            part["image"]
-            for message in messages
-            for part in message.get("content", [])
-            if isinstance(part, dict) and part.get("type") == "image"
-        ]
-        kwargs: dict[str, Any] = {
-            "text": [text],
-            "return_tensors": "pt",
-            "padding": True,
-        }
-        if images:
-            kwargs["images"] = images
-        return processor(**kwargs)
+    h_image = row.get("h_image")
+    c_image = row.get("c_image")
+    images = [img for img in (h_image, c_image) if img is not None]
+
+    blob = row.get("sample_pickle")
+    sample: dict[str, Any]
+    if blob is not None:
+        if isinstance(blob, memoryview):
+            blob = blob.tobytes()
+        sample = pickle.loads(blob)
+    else:
+        sample = {}
+
+    return images, sample
 
 
-def _move_to_device(inputs: dict[str, Any], device: torch.device) -> dict[str, Any]:
-    """Move tensor values in a dict to the target device."""
-    return {
-        key: value.to(device) if hasattr(value, "to") else value
-        for key, value in inputs.items()
-    }
+# Minimal prompt used when peak tables are not provided (image_only mode).
+IMAGE_ONLY_PROMPT: str = (
+    "Determine the molecular structure from the 1H and 13C NMR spectra "
+    "below.\nOutput the canonical SMILES of the molecule."
+)
 
 
-def _decode_generated(
-    processor: Any,
-    inputs: dict[str, Any],
-    generated_ids: torch.Tensor,
+def extract_label(example: dict[str, Any]) -> str | None:
+    """Extract ground-truth answer from your dataset.
+
+    Modify this if your dataset stores labels using another field.
+    """
+
+    if "answer" in example:
+        return str(example["answer"])
+
+    if "target" in example:
+        return str(example["target"])
+
+    if "label" in example:
+        return str(example["label"])
+
+    if "messages" in example:
+        for msg in example["messages"]:
+            if msg.get("role") == "assistant":
+                content = msg.get("content", "")
+                if isinstance(content, str):
+                    return content
+                if isinstance(content, list):
+                    texts = [
+                        x.get("text", "")
+                        for x in content
+                        if isinstance(x, dict) and x.get("type") == "text"
+                    ]
+                    return "\n".join(texts)
+
+    return None
+
+
+@torch.inference_mode()
+def generate_one(
+    model,
+    tokenizer,
+    images: list[Any],
+    prompt: str,
+    max_new_tokens: int = 256,
+    temperature: float = 0.0,
+    top_p: float = 1.0,
 ) -> str:
-    """Decode only the newly generated tokens (excluding the prompt)."""
-    prompt_len = inputs["input_ids"].shape[-1]
-    new_tokens = generated_ids[:, prompt_len:]
-    tokenizer = getattr(processor, "tokenizer", processor)
-    decoded = tokenizer.batch_decode(new_tokens, skip_special_tokens=True)
-    return decoded[0].strip() if decoded else ""
-
-
-def _predict_one(
-    model: Any,
-    processor: Any,
-    sample: dict[str, Any],
-    mode: str,
-    device: torch.device,
-    max_new_tokens: int,
-) -> str:
-    """Generate a SMILES prediction for a single sample under one ablation mode.
+    """Generate one prediction from zero or two NMR spectrum images.
 
     Parameters
     ----------
     model
-        Loaded vision-language model in inference mode.
-    processor
-        Matching multimodal processor.
-    sample
-        Normalized SpectraLM sample dictionary.
-    mode
-        Ablation input mode (see :data:`PREDICTION_MODES`).
-    device
-        Target device for tensors.
+        The loaded VLM with LoRA adapter.
+    tokenizer
+        Corresponding tokenizer.
+    images
+        List of 0 or 2 PIL/ndarray images.
+    prompt
+        Text prompt.
     max_new_tokens
-        Maximum number of tokens to generate.
+        Maximum tokens to generate.
+    temperature
+        Sampling temperature (0 = greedy).
+    top_p
+        Nucleus sampling parameter.
 
     Returns
     -------
     str
-        Raw generated text (typically a SMILES string).
+        Decoded prediction string.
     """
-    messages = _build_prediction_messages(sample, mode)
-    inputs = _encode_messages(processor, messages)
-    inputs = _move_to_device(inputs, device)
-
-    with torch.inference_mode():
-        generated_ids = model.generate(
-            **inputs,
-            max_new_tokens=max_new_tokens,
-            do_sample=False,
-            temperature=None,
-            top_p=None,
+    if len(images) not in (0, 2):
+        raise ValueError(
+            f"Expected 0 or 2 images, but got {len(images)}."
         )
 
-    return _decode_generated(processor, inputs, generated_ids)
+    # Build user-message content dynamically
+    content: list[dict[str, Any]] = []
+    for _ in images:
+        content.append({"type": "image"})
+    content.append({"type": "text", "text": prompt})
+
+    messages = [{"role": "user", "content": content}]
+
+    input_text = tokenizer.apply_chat_template(
+        messages,
+        add_generation_prompt=True,
+    )
+
+    if images:
+        inputs = tokenizer(
+            images,
+            input_text,
+            add_special_tokens=False,
+            return_tensors="pt",
+        ).to("cuda")
+    else:
+        inputs = tokenizer(
+            input_text,
+            add_special_tokens=False,
+            return_tensors="pt",
+        ).to("cuda")
+
+    do_sample = temperature > 0
+
+    output_ids = model.generate(
+        **inputs,
+        max_new_tokens=max_new_tokens,
+        do_sample=do_sample,
+        temperature=temperature if do_sample else None,
+        top_p=top_p if do_sample else None,
+        use_cache=True,
+    )
+
+    input_len = inputs["input_ids"].shape[1]
+    generated_ids = output_ids[:, input_len:]
+
+    pred = tokenizer.batch_decode(
+        generated_ids,
+        skip_special_tokens=True,
+        clean_up_tokenization_spaces=False,
+    )[0]
+
+    return pred.strip()
 
 
-# ---------------------------------------------------------------------------
-# Entrypoint
-# ---------------------------------------------------------------------------
+def normalize_text(x: str | None) -> str:
+    if x is None:
+        return ""
+    return " ".join(str(x).strip().split())
 
 
 def main(config: dict[str, Any]) -> None:
-    """Run batch prediction from a configuration dictionary.
+    """Run inference over the test split.
 
     Parameters
     ----------
     config
-        Configuration with keys ``model_path``, ``test_dataset``,
-        ``mode``, ``output``, ``max_new_tokens``, and optionally
-        ``max_samples`` and ``max_seq_length``.
+        Configuration dictionary.  See ``configs/inference.yaml`` for keys.
     """
-    model_path: str = config["model_path"]
-    test_dataset: str = config["test_dataset"]
     mode: str = config.get("mode", "image_table_rule")
-    output_path: str = config.get("output", "outputs/predictions.jsonl")
-    max_new_tokens: int = int(config.get("max_new_tokens", 256))
-    max_samples: int | None = config.get("max_samples")
-    if max_samples is not None:
-        max_samples = int(max_samples)
+    max_samples: int | None = config.get("max_samples", None)
+    seed: int = int(config.get("seed", 3407))
 
-    if mode not in PREDICTION_MODES:
+    if mode not in ("image_table_rule", "image_table", "table_only", "image_only"):
         raise ValueError(
-            f"Unknown prediction mode: {mode!r}.  "
-            f"Must be one of {PREDICTION_MODES}."
+            f"Unknown mode {mode!r}.  Expected one of: "
+            "image_table_rule, image_table, table_only, image_only."
         )
 
-    # -- Load model ---------------------------------------------------------
-    print(f"Loading model: {model_path}")
-    model, processor = FastVisionModel.from_pretrained(
-        model_path,
+    # ---- 1. Load model ---------------------------------------------------
+    model, tokenizer = load_model_for_inference(
+        base_model_path=config["model_path"],
+        adapter_path=config.get("adapter_path"),
         max_seq_length=config.get("max_seq_length", 8192),
-        load_in_4bit=True,
+        load_in_4bit=config.get("load_in_4bit", True),
     )
-    FastVisionModel.for_inference(model)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model.to(device)
 
-    # -- Load samples -------------------------------------------------------
-    samples = load_pickle_list(test_dataset)
+    # ---- 2. Load dataset (raw columns, no messages transform) ------------
+    test_ds = load_nmr_dataset(
+        config["dataset_dir"],
+        split="test",
+        train_size=float(config.get("train_size", 0.8)),
+        render_cache_dir=config.get("render_cache_dir", config.get("train_cache_dir")),
+        render_cache_version=config.get("cache_version", "1"),
+        seed=seed,
+        with_messages=False,
+    )
+
+    # ---- 3. Select prompt template ---------------------------------------
+    rng = random.Random(seed)
+    prompt_template: str = rng.choice(STRUCTURE_PROMPTS)
+
+    # ---- 4. Ablation-mode flags ------------------------------------------
+    include_images: bool = mode != "table_only"
+    include_tables: bool = mode != "image_only"
+
+    print(f"Mode: {mode}  |  images={include_images}  |  tables={include_tables}")
+    print(f"Prompt template: {prompt_template[:80]}...")
+
+    # ---- 5. Inference loop -----------------------------------------------
+    output_path = Path(config["output"])
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    n_total = 0
+    n_exact = 0
+    n_errors = 0
+
+    iterator = enumerate(test_ds)
     if max_samples is not None:
-        samples = samples[:max_samples]
-    print(f"Loaded {len(samples)} test samples  |  mode = {mode}")
+        iterator = itertools.islice(iterator, max_samples)
 
-    # -- Generate predictions -----------------------------------------------
-    results: list[dict[str, str]] = []
-    for sample in tqdm(samples, desc=f"Predicting ({mode})"):
-        prediction = _predict_one(
-            model, processor, sample, mode, device, max_new_tokens
-        )
-        ref_smiles = (
-            sample.get("canonical_smiles")
-            or sample.get("smiles")
-            or ""
-        )
-        results.append({
-            "id": str(sample.get("id", "")),
-            "prediction": prediction,
-            "reference_smiles": str(ref_smiles),
-            "mode": mode,
-        })
+    with output_path.open("w", encoding="utf-8") as f:
+        for idx, row in tqdm(iterator, desc="Infer", total=max_samples):
+            # --- extract data from raw row ---
+            images, sample = extract_sample_from_row(row)
+            label = str(sample.get("canonical_smiles", "") or "").strip()
 
-    # -- Write output -------------------------------------------------------
-    output = Path(output_path)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    with output.open("w", encoding="utf-8") as handle:
-        for row in results:
-            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
-    print(f"Wrote {len(results)} predictions to {output}")
+            # --- build prompt ---
+            if include_tables:
+                prompt = build_structure_prompt(sample, prompt_template)
+            else:
+                prompt = IMAGE_ONLY_PROMPT
 
-    # -- Save inference log -------------------------------------------------
-    logger = TrainingLogger(output_dir=output.parent, config=config)
-    logger.log_eval(step=0, eval_loss=0.0, num_samples=len(results), mode=mode)
-    logger.save()
+            # --- select images ---
+            selected_images = images if include_images else []
+
+            # --- generate ---
+            try:
+                pred = generate_one(
+                    model=model,
+                    tokenizer=tokenizer,
+                    images=selected_images,
+                    prompt=prompt,
+                    max_new_tokens=config.get("max_new_tokens", 256),
+                    temperature=config.get("temperature", 0.0),
+                    top_p=config.get("top_p", 1.0),
+                )
+            except Exception:
+                pred = ""
+                n_errors += 1
+                traceback.print_exc()
+
+            # --- scoring ---
+            pred_norm = normalize_text(pred)
+            label_norm = normalize_text(label)
+
+            exact_match = pred_norm == label_norm if label else None
+
+            if exact_match is not None:
+                n_total += 1
+                n_exact += int(exact_match)
+
+            record: dict[str, Any] = {
+                "idx": idx,
+                "mode": mode,
+                "prompt": prompt,
+                "prediction": pred,
+                "label": label,
+                "exact_match": exact_match,
+            }
+
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+    # ---- 6. Report -------------------------------------------------------
+    print(f"Mode: {mode}")
+    print(f"Saved predictions to: {output_path}")
+    if n_errors:
+        print(f"Errors: {n_errors}")
+    if n_total > 0:
+        print(f"Exact match: {n_exact}/{n_total} = {n_exact / n_total:.4f}")
 
 
 if __name__ == "__main__":

@@ -7,21 +7,18 @@
 #   table_only        — peak tables only, no images
 #   image_only        — images only, no peak tables or rules
 
-# ---------------------------------------------------------------------------
 # Model
-# ---------------------------------------------------------------------------
-model_path: outputs/spectralm-butina-qwen3-vl-8b
+model_path: outputs/spectralm-qwen3-vl-8b
 max_seq_length: 8192
 
-# ---------------------------------------------------------------------------
 # Data
-# ---------------------------------------------------------------------------
-test_dataset: dataset/subsets/spectralm_butina_1000_300/test.pkl
+dataset_dir: dataset/subsets
 mode: image_table_rule               # ablation mode
 max_samples: null                    # null = all, or set a number
 max_new_tokens: 256
+render_cache_dir: cache/test
+cache_version: "v1"
+seed: 42
 
-# ---------------------------------------------------------------------------
 # Output
-# ---------------------------------------------------------------------------
 output: outputs/predictions.jsonl

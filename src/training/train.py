@@ -10,7 +10,7 @@ from __future__ import annotations
 import sys
 import torch
 from typing import Any
-
+from pathlib import Path
 from src.config import TrainingLoggerCallback, load_config
 from src.logger import TrainingLogger
 from src.data.dataset import load_nmr_dataset
@@ -121,12 +121,12 @@ def main(config: dict[str, Any]) -> None:
     training_logger = TrainingLogger(
         output_dir="outputs/logs",
         config={
-            "model_name": "Qwen2.5-VL",
-            "learning_rate": 2e-4,
-            "num_train_epochs": 3,
-            "per_device_train_batch_size": 1,
-            "gradient_accumulation_steps": 8,
-            "eval_steps": 100,
+            "model_name": Path(config.get("model_path")).name,
+            "learning_rate": sft_kwargs['learning_rate'],
+            "num_train_epochs": sft_kwargs['num_train_epochs'],
+            "per_device_train_batch_size": sft_kwargs["per_device_train_batch_size"],
+            "gradient_accumulation_steps": sft_kwargs['gradient_accumulation_steps'],
+            "eval_steps": sft_kwargs['eval_steps'],
         },
         run_name="nmr_vl_sft",
     )
@@ -155,6 +155,12 @@ def main(config: dict[str, Any]) -> None:
     print(f"{start_gpu_memory} GB of memory reserved.")
 
     trainer_stats = trainer.train()
+    
+    best_model_dir = Path(config.get("output_dir", "outputs")) / "best_model"
+    trainer.save_model(best_model_dir)
+    tokenizer.save_pretrained(best_model_dir)
+
+    print(f"Best model saved to: {best_model_dir}")
     
     # Show final memory and time stats
     used_memory = round(torch.cuda.max_memory_reserved() / 1024 / 1024 / 1024, 3)
