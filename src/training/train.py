@@ -11,11 +11,13 @@ import sys
 import torch
 from typing import Any
 
-from src.config import TrainingLogger, load_config
-from src.data.dataset import NMRSpectraInstructDataset
+from src.config import TrainingLoggerCallback, load_config
+from src.logger import TrainingLogger
+from src.data.dataset import load_nmr_dataset
 from unsloth import FastVisionModel
 from unsloth.trainer import UnslothVisionDataCollator
 from trl import SFTConfig, SFTTrainer
+
 
 
 def main(config: dict[str, Any]) -> None:
@@ -55,20 +57,26 @@ def main(config: dict[str, Any]) -> None:
 
     # 3. Build datasets
     dataset_dir: str = config["dataset_dir"]
-    train_size: int = config.get("train_size", 1000)
-    cache_version: str | None = config.get("cache_version")
+    train_size: float = float(config.get("train_size", 0.8))
+    eval_split: float = float(config.get("eval_split", 0.1))
 
-    train_ds = NMRSpectraInstructDataset(
+    full_ds = load_nmr_dataset(
         dataset_dir,
         split="train",
         train_size=train_size,
-        cache_dir=config.get("train_cache_dir"),
-        cache_version=cache_version,
+        render_cache_dir=config.get("train_cache_dir"),
+        render_cache_version=config.get("cache_version", "1"),
         seed=seed,
     )
 
-    # Hint：test datasets is not use to eval
-    print(f"Train samples: {len(train_ds)}")
+    # Split a fraction for periodic evaluation
+    split_ds = full_ds.train_test_split(
+        test_size=eval_split, seed=seed
+    )
+    train_ds = split_ds["train"].shuffle(seed=seed)
+    eval_ds = split_ds["test"]
+
+    print(f"Train samples: {len(train_ds)}  |  Eval samples: {len(eval_ds)}")
 
     # 4. Train
     FastVisionModel.for_training(model)
@@ -79,26 +87,63 @@ def main(config: dict[str, Any]) -> None:
         "warmup_steps": config.get("warmup_steps", 5),
         "num_train_epochs": float(config["num_train_epochs"]),
         "learning_rate": float(config.get("learning_rate", 2e-4)),
+        
+        "logging_strategy": "steps",
         "logging_steps": config.get("logging_steps", 1),
+        "logging_first_step": True,
+        
+        "eval_strategy": "steps",
+        "eval_steps": config.get("eval_steps", 50),
+        
+        "save_strategy": "steps",
         "save_steps": config.get("save_steps", 50),
+        "save_total_limit": 5,
+        
+        "metric_for_best_model": "eval_loss", 
+        "greater_is_better": False,          
+        "load_best_model_at_end": True,       
+
         "optim": "adamw_8bit",
         "weight_decay": float(config.get("weight_decay", 0.001)),
-        "lr_scheduler_type": "linear",
+        "lr_scheduler_type": "cosine_with_restarts",
         "seed": seed,
         "output_dir": config.get("output_dir", "outputs"),
         "report_to": "none",
+        
         # Vision fine-tuning requirements
         "remove_unused_columns": False,
         "dataset_text_field": "",
         "dataset_kwargs": {"skip_prepare_dataset": True},
         "max_length": config.get("max_seq_length", 8192),
+        "bf16": True,
     }
+
+    training_logger = TrainingLogger(
+        output_dir="outputs/logs",
+        config={
+            "model_name": "Qwen2.5-VL",
+            "learning_rate": 2e-4,
+            "num_train_epochs": 3,
+            "per_device_train_batch_size": 1,
+            "gradient_accumulation_steps": 8,
+            "eval_steps": 100,
+        },
+        run_name="nmr_vl_sft",
+    )
+
+    logger_callback = TrainingLoggerCallback(
+        logger=training_logger,
+        save_every_n_logs=10,
+        filename="training_log_live.json",
+    )
 
     trainer = SFTTrainer(
         model=model,
         tokenizer=tokenizer,
         data_collator=UnslothVisionDataCollator(model, tokenizer),
+        callbacks=[logger_callback],
         train_dataset=train_ds,
+        eval_dataset=eval_ds,
         args=SFTConfig(**sft_kwargs),
     )
 
@@ -124,15 +169,6 @@ def main(config: dict[str, Any]) -> None:
     print(f"Peak reserved memory for training = {used_memory_for_lora} GB.")
     print(f"Peak reserved memory % of max memory = {used_percentage} %.")
     print(f"Peak reserved memory for training % of max memory = {lora_percentage} %.")
-
-
-    # 5. Save training log
-    logger = TrainingLogger.from_trainer(
-        trainer,
-        output_dir=config.get("output_dir", "outputs"),
-        config=config,
-    )
-    logger.save()
 
 
 if __name__ == "__main__":

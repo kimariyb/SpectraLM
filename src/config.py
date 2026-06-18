@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-import json
-from datetime import datetime
 from pathlib import Path
 from typing import Any
-
+from transformers import TrainerCallback, TrainerControl, TrainerState, TrainingArguments
+from src.logger import TrainingLogger
 import yaml
 
 
@@ -42,121 +41,67 @@ def load_config(path: str | Path) -> dict[str, Any]:
         )
     return payload
 
-class TrainingLogger:
-    """Collect and persist training metrics to JSON.
 
-    Designed to work with :class:`trl.SFTTrainer` but usable standalone
-    for any step-wise metric recording.
+class TrainingLoggerCallback(TrainerCallback):
+    """HuggingFace Trainer callback for TrainingLogger.
+
+    It records logs from Trainer.on_log and optionally saves JSON
+    periodically during training.
 
     Parameters
     ----------
-    output_dir
-        Directory where the log JSON will be written.
-    config
-        Optional config dict to embed in the log for reproducibility.
+    logger
+        TrainingLogger instance.
+    save_every_n_logs
+        If positive, save JSON every n log events.
+    filename
+        Optional fixed JSON filename. Useful for continuously overwriting
+        the same log file during training.
     """
 
     def __init__(
         self,
-        output_dir: str | Path,
-        config: dict[str, Any] | None = None,
+        logger: TrainingLogger,
+        save_every_n_logs: int = 0,
+        filename: str = "training_log_live.json",
     ) -> None:
-        self.output_dir = Path(output_dir)
-        self.config = config or {}
-        self.timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.logger = logger
+        self.save_every_n_logs = int(save_every_n_logs)
+        self.filename = filename
+        self.num_logs = 0
 
-        self.train_steps: list[dict[str, Any]] = []
+    def on_log(
+        self,
+        args: TrainingArguments,
+        state: TrainerState,
+        control: TrainerControl,
+        logs: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ):
+        if not logs:
+            return control
 
-    @classmethod
-    def from_trainer(
-        cls,
-        trainer: Any,
-        output_dir: str | Path,
-        config: dict[str, Any] | None = None,
-    ) -> TrainingLogger:
-        """Build a logger by extracting the log history from a finished
-        :class:`~trl.SFTTrainer`.
+        entry = dict(logs)
 
-        Entries containing ``"loss"`` go to :attr:`train_steps`.
+        # HuggingFace logs sometimes do not include step.
+        entry.setdefault("step", state.global_step)
 
-        Parameters
-        ----------
-        trainer
-            An :class:`~trl.SFTTrainer` instance whose ``.state.log_history``
-            has been populated during training.
-        output_dir
-            Directory for the output JSON log file.
-        config
-            Optional config dict to embed.
+        self.logger.log_entry(entry)
+        self.num_logs += 1
 
-        Returns
-        -------
-        TrainingLogger
-            Populated logger ready to :meth:`save`.
-        """
-        logger = cls(output_dir, config)
-        logger._ingest_trainer_logs(trainer)
-        return logger
+        if self.save_every_n_logs > 0:
+            if self.num_logs % self.save_every_n_logs == 0:
+                self.logger.save_json(self.filename)
 
-    def _ingest_trainer_logs(self, trainer: Any) -> None:
-        """Extract training steps from ``trainer.state.log_history``."""
-        if not (hasattr(trainer, "state") and trainer.state.log_history):
-            return
+        return control
 
-        for entry in trainer.state.log_history:
-            if "loss" in entry:
-                self.train_steps.append(entry)
-
-    def log_train(self, step: int, loss: float, **extra: Any) -> None:
-        """Record a training step.
-
-        Parameters
-        ----------
-        step
-            Global training step number.
-        loss
-            Training loss value.
-        **extra
-            Additional scalars (``learning_rate``, ``grad_norm``, …).
-        """
-        entry: dict[str, Any] = {"step": step, "loss": loss}
-        entry.update(extra)
-        self.train_steps.append(entry)
-
-    def to_dict(self) -> dict[str, Any]:
-        """Build the dictionary that will be persisted.
-
-        Returns
-        -------
-        dict[str, Any]
-            Log payload.
-        """
-        payload: dict[str, Any] = {
-            "timestamp": self.timestamp,
-            "train_log": self.train_steps,
-            "final_train_loss": (
-                self.train_steps[-1]["loss"] if self.train_steps else None
-            ),
-        }
-        if self.config:
-            payload["config"] = {
-                k: v for k, v in self.config.items() if k != "model_path"
-            }
-        return payload
-
-    def save(self) -> Path:
-        """Write the log to ``<output_dir>/training_log_<timestamp>.json``.
-
-        Returns
-        -------
-        Path
-            Path to the written JSON file.
-        """
-        self.output_dir.mkdir(parents=True, exist_ok=True)
-        log_path = self.output_dir / f"training_log_{self.timestamp}.json"
-        log_path.write_text(
-            json.dumps(self.to_dict(), ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        print(f"Training log saved to {log_path}")
-        return log_path
+    def on_train_end(
+        self,
+        args: TrainingArguments,
+        state: TrainerState,
+        control: TrainerControl,
+        **kwargs: Any,
+    ):
+        self.logger.save_json(self.filename)
+        self.logger.save_csv(prefix="training_log_live")
+        return control
