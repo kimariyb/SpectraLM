@@ -1,22 +1,5 @@
 """LoRA/QLoRA fine-tuning entrypoint for SpectraLM VLM experiments.
 
-Supports two configuration styles (see ``configs/train.yaml``):
-
-**Style A — directory + split (new):**
-
-.. code-block:: yaml
-
-    dataset_dir: dataset/subsets
-    # train_ds = NmrReasoningDataset(dataset_dir, split="train", ...)
-
-**Style B — explicit file paths (legacy):**
-
-.. code-block:: yaml
-
-    train_dataset: dataset/subsets/train.pkl
-    eval_dataset:  dataset/subsets/test.pkl
-    # train_ds = NmrReasoningDataset(train_dataset)
-
 Usage::
 
     python -m src.training.train configs/train.yaml
@@ -27,8 +10,8 @@ from __future__ import annotations
 import sys
 from typing import Any
 
-from src.config import load_config
-from src.data.dataset import NmrReasoningDataset
+from src.config import TrainingLogger, load_config
+from src.data.dataset import NMRSpectraInstructDataset
 from unsloth import FastVisionModel
 from unsloth.trainer import UnslothVisionDataCollator
 from trl import SFTConfig, SFTTrainer
@@ -69,14 +52,12 @@ def main(config: dict[str, Any]) -> None:
         loftq_config=None,
     )
 
-    # ------------------------------------------------------------------
     # 3. Build datasets
-    # ------------------------------------------------------------------
     dataset_dir: str = config["dataset_dir"]
     train_size: int = config.get("train_size", 1000)
     cache_version: str | None = config.get("cache_version")
 
-    train_ds = NmrReasoningDataset(
+    train_ds = NMRSpectraInstructDataset(
         dataset_dir,
         split="train",
         train_size=train_size,
@@ -85,7 +66,7 @@ def main(config: dict[str, Any]) -> None:
         seed=seed,
     )
 
-    eval_ds = NmrReasoningDataset(
+    eval_ds = NMRSpectraInstructDataset(
         dataset_dir,
         split="test",
         train_size=train_size,
@@ -100,7 +81,6 @@ def main(config: dict[str, Any]) -> None:
     # 4. Train
     FastVisionModel.for_training(model)
 
-    # Allow either max_steps or num_train_epochs (mutually exclusive in SFTConfig)
     sft_kwargs: dict[str, Any] = {
         "per_device_train_batch_size": config.get("per_device_train_batch_size", 4),
         "gradient_accumulation_steps": config.get("gradient_accumulation_steps", 4),
@@ -119,7 +99,7 @@ def main(config: dict[str, Any]) -> None:
         "remove_unused_columns": False,
         "dataset_text_field": "",
         "dataset_kwargs": {"skip_prepare_dataset": True},
-        "max_length": config.get("max_length", 2048),
+        "max_length": config.get("max_seq_length", 8192),
     }
 
     if "num_train_epochs" in config:
@@ -137,6 +117,14 @@ def main(config: dict[str, Any]) -> None:
     )
 
     trainer.train()
+
+    # 5. Save training log
+    logger = TrainingLogger.from_trainer(
+        trainer,
+        output_dir=config.get("output_dir", "outputs"),
+        config=config,
+    )
+    logger.save()
 
 
 if __name__ == "__main__":

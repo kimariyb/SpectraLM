@@ -30,7 +30,7 @@ import torch
 from PIL import Image as PILImage
 from tqdm import tqdm
 
-from src.config import load_config
+from src.config import TrainingLogger, load_config
 from src.io import load_pickle_list
 from src.spectra.render import hydrogen_to_spectra, carbon_to_spectra
 from src.evaluation.prompts import STRUCTURE_PROMPTS, build_structure_prompt
@@ -354,6 +354,11 @@ def main(config: dict[str, Any]) -> None:
         for row in results:
             handle.write(json.dumps(row, ensure_ascii=False) + "\n")
     print(f"Wrote {len(results)} predictions to {output}")
+
+    # -- Save inference log -------------------------------------------------
+    logger = TrainingLogger(output_dir=output.parent, config=config)
+    logger.log_eval(step=0, eval_loss=0.0, num_samples=len(results), mode=mode)
+    logger.save()
 
 
 if __name__ == "__main__":
