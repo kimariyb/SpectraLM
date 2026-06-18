@@ -19,12 +19,10 @@ per_device_train_batch_size: 4
 gradient_accumulation_steps: 4
 lora_r: 16
 lora_alpha: 16
-# max_steps: 30                  # uncomment for step-based training
-num_train_epochs: 3              # uncomment for epoch-based training
+num_train_epochs: 3             
 learning_rate: 2.0e-5
 warmup_steps: 5
 logging_steps: 5
 save_steps: 50
-eval_steps: 5
 weight_decay: 0.001
 seed: 3407

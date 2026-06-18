@@ -10,11 +10,6 @@ from typing import Any
 import yaml
 
 
-# ---------------------------------------------------------------------------
-# YAML config
-# ---------------------------------------------------------------------------
-
-
 def load_config(path: str | Path) -> dict[str, Any]:
     """Load a YAML configuration file.
 
@@ -48,7 +43,7 @@ def load_config(path: str | Path) -> dict[str, Any]:
     return payload
 
 class TrainingLogger:
-    """Collect and persist training / evaluation metrics to JSON.
+    """Collect and persist training metrics to JSON.
 
     Designed to work with :class:`trl.SFTTrainer` but usable standalone
     for any step-wise metric recording.
@@ -71,7 +66,6 @@ class TrainingLogger:
         self.timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
         self.train_steps: list[dict[str, Any]] = []
-        self.eval_steps: list[dict[str, Any]] = []
 
     @classmethod
     def from_trainer(
@@ -83,9 +77,7 @@ class TrainingLogger:
         """Build a logger by extracting the log history from a finished
         :class:`~trl.SFTTrainer`.
 
-        Entries containing ``"loss"`` (without ``"eval_loss"``) go to
-        :attr:`train_steps`; entries containing ``"eval_loss"`` go to
-        :attr:`eval_steps`.
+        Entries containing ``"loss"`` go to :attr:`train_steps`.
 
         Parameters
         ----------
@@ -107,14 +99,12 @@ class TrainingLogger:
         return logger
 
     def _ingest_trainer_logs(self, trainer: Any) -> None:
-        """Split ``trainer.state.log_history`` into train / eval steps."""
+        """Extract training steps from ``trainer.state.log_history``."""
         if not (hasattr(trainer, "state") and trainer.state.log_history):
             return
 
         for entry in trainer.state.log_history:
-            if "eval_loss" in entry:
-                self.eval_steps.append(entry)
-            elif "loss" in entry:
+            if "loss" in entry:
                 self.train_steps.append(entry)
 
     def log_train(self, step: int, loss: float, **extra: Any) -> None:
@@ -133,22 +123,6 @@ class TrainingLogger:
         entry.update(extra)
         self.train_steps.append(entry)
 
-    def log_eval(self, step: int, eval_loss: float, **extra: Any) -> None:
-        """Record an evaluation step.
-
-        Parameters
-        ----------
-        step
-            Global step number at which eval ran.
-        eval_loss
-            Evaluation loss value.
-        **extra
-            Additional scalars.
-        """
-        entry: dict[str, Any] = {"step": step, "eval_loss": eval_loss}
-        entry.update(extra)
-        self.eval_steps.append(entry)
-
     def to_dict(self) -> dict[str, Any]:
         """Build the dictionary that will be persisted.
 
@@ -160,12 +134,8 @@ class TrainingLogger:
         payload: dict[str, Any] = {
             "timestamp": self.timestamp,
             "train_log": self.train_steps,
-            "eval_log": self.eval_steps,
             "final_train_loss": (
                 self.train_steps[-1]["loss"] if self.train_steps else None
-            ),
-            "final_eval_loss": (
-                self.eval_steps[-1]["eval_loss"] if self.eval_steps else None
             ),
         }
         if self.config:

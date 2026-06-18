@@ -8,6 +8,7 @@ Usage::
 from __future__ import annotations
 
 import sys
+import torch
 from typing import Any
 
 from src.config import TrainingLogger, load_config
@@ -66,17 +67,8 @@ def main(config: dict[str, Any]) -> None:
         seed=seed,
     )
 
-    eval_ds = NMRSpectraInstructDataset(
-        dataset_dir,
-        split="test",
-        train_size=train_size,
-        cache_dir=config.get("eval_cache_dir"),
-        cache_version=cache_version,
-        seed=seed,
-    )
-
+    # Hint：test datasets is not use to eval
     print(f"Train samples: {len(train_ds)}")
-    print(f"Eval samples:  {len(eval_ds)}")
 
     # 4. Train
     FastVisionModel.for_training(model)
@@ -85,9 +77,9 @@ def main(config: dict[str, Any]) -> None:
         "per_device_train_batch_size": config.get("per_device_train_batch_size", 4),
         "gradient_accumulation_steps": config.get("gradient_accumulation_steps", 4),
         "warmup_steps": config.get("warmup_steps", 5),
+        "num_train_epochs": float(config["num_train_epochs"]),
         "learning_rate": float(config.get("learning_rate", 2e-4)),
         "logging_steps": config.get("logging_steps", 1),
-        "eval_steps": config.get("eval_steps", 50),
         "save_steps": config.get("save_steps", 50),
         "optim": "adamw_8bit",
         "weight_decay": float(config.get("weight_decay", 0.001)),
@@ -102,21 +94,37 @@ def main(config: dict[str, Any]) -> None:
         "max_length": config.get("max_seq_length", 8192),
     }
 
-    if "num_train_epochs" in config:
-        sft_kwargs["num_train_epochs"] = float(config["num_train_epochs"])
-    else:
-        sft_kwargs["max_steps"] = config.get("max_steps", 30)
-
     trainer = SFTTrainer(
         model=model,
         tokenizer=tokenizer,
         data_collator=UnslothVisionDataCollator(model, tokenizer),
         train_dataset=train_ds,
-        eval_dataset=eval_ds,
         args=SFTConfig(**sft_kwargs),
     )
 
-    trainer.train()
+    # @title Show current memory stats
+    gpu_stats = torch.cuda.get_device_properties(0)
+    start_gpu_memory = round(torch.cuda.max_memory_reserved() / 1024 / 1024 / 1024, 3)
+    max_memory = round(gpu_stats.total_memory / 1024 / 1024 / 1024, 3)
+    print(f"GPU = {gpu_stats.name}. Max memory = {max_memory} GB.")
+    print(f"{start_gpu_memory} GB of memory reserved.")
+
+    trainer_stats = trainer.train()
+    
+    # Show final memory and time stats
+    used_memory = round(torch.cuda.max_memory_reserved() / 1024 / 1024 / 1024, 3)
+    used_memory_for_lora = round(used_memory - start_gpu_memory, 3)
+    used_percentage = round(used_memory / max_memory * 100, 3)
+    lora_percentage = round(used_memory_for_lora / max_memory * 100, 3)
+    print(f"{trainer_stats.metrics['train_runtime']} seconds used for training.")
+    print(
+        f"{round(trainer_stats.metrics['train_runtime']/60, 2)} minutes used for training."
+    )
+    print(f"Peak reserved memory = {used_memory} GB.")
+    print(f"Peak reserved memory for training = {used_memory_for_lora} GB.")
+    print(f"Peak reserved memory % of max memory = {used_percentage} %.")
+    print(f"Peak reserved memory for training % of max memory = {lora_percentage} %.")
+
 
     # 5. Save training log
     logger = TrainingLogger.from_trainer(
