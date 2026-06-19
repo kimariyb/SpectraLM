@@ -6,6 +6,8 @@ import json
 import pickle
 from pathlib import Path
 
+from PIL import Image as PILImage
+
 from src.data.dataset import (
     NMRMessageTransform,
     load_lazy_nmr_dataset,
@@ -171,3 +173,72 @@ def test_load_lazy_nmr_dataset_from_jsonl_directory(tmp_path: Path, ethanol_samp
     assert [message["role"] for message in row["messages"]] == ["user", "assistant"]
     assert row["messages"][0]["content"][0]["image"].size == (64, 64)
     assert "Final canonical SMILES:" in row["messages"][1]["content"][0]["text"]
+
+
+def test_load_lazy_nmr_dataset_with_pre_rendered_images(
+    tmp_path: Path,
+    ethanol_sample,
+) -> None:
+    """Pre-rendered image backend should read PNGs instead of drawing spectra."""
+    sample = dict(ethanol_sample)
+    sample["id"] = "sample-0"
+    (tmp_path / "samples.jsonl").write_text(
+        json.dumps(sample) + "\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "train_ids.txt").write_text("sample-0\n", encoding="utf-8")
+
+    rendered_dir = tmp_path / "rendered"
+    rendered_dir.mkdir()
+    PILImage.new("RGB", (32, 18), color=(255, 255, 255)).save(
+        rendered_dir / "sample-0_1h.png"
+    )
+    PILImage.new("RGB", (32, 18), color=(240, 240, 240)).save(
+        rendered_dir / "sample-0_13c.png"
+    )
+
+    ds = load_lazy_nmr_dataset(
+        tmp_path,
+        split="train",
+        task_probs={"structure": 1.0},
+        image_size=(128, 72),
+        image_backend="pre_rendered",
+        rendered_image_dir=rendered_dir,
+    )
+
+    row = ds[0]
+
+    assert row["messages"][0]["content"][0]["image"].size == (128, 72)
+    assert row["messages"][0]["content"][1]["image"].size == (128, 72)
+    assert row["messages"][1]["content"][0]["text"] == "CCO"
+
+
+def test_load_lazy_nmr_dataset_missing_pre_rendered_images_raises(
+    tmp_path: Path,
+    ethanol_sample,
+) -> None:
+    """Strict pre-rendered mode should fail fast when image files are absent."""
+    sample = dict(ethanol_sample)
+    sample["id"] = "sample-0"
+    (tmp_path / "samples.jsonl").write_text(
+        json.dumps(sample) + "\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "train_ids.txt").write_text("sample-0\n", encoding="utf-8")
+    rendered_dir = tmp_path / "rendered"
+    rendered_dir.mkdir()
+
+    ds = load_lazy_nmr_dataset(
+        tmp_path,
+        split="train",
+        image_backend="pre_rendered",
+        rendered_image_dir=rendered_dir,
+        missing_image_policy="error",
+    )
+
+    try:
+        ds[0]
+    except FileNotFoundError as exc:
+        assert "Missing pre-rendered NMR image" in str(exc)
+    else:
+        raise AssertionError("Expected FileNotFoundError for missing PNGs")

@@ -10,6 +10,9 @@ use_gradient_checkpointing: unsloth
 # Dataset
 dataset_dir: dataset/paired_jsonl_full
 dataset_backend: lazy_jsonl
+image_backend: pre_rendered
+rendered_image_dir: dataset/paired_jsonl_full/rendered/768x432
+missing_image_policy: error
 train_split_name: clean_50k_train
 eval_split_name: clean_50k_val
 target_format: smiles

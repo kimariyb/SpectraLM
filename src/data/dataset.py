@@ -798,17 +798,40 @@ class LazyNMRJsonlDataset(Dataset):
         c_snr: float = 300.0,
         render_seed: int | None = 3407,
         image_size: tuple[int, int] | list[int] | None = None,
+        image_backend: str = "lazy_render",
+        rendered_image_dir: str | Path | None = None,
+        missing_image_policy: str = "error",
     ) -> None:
         self.dataset_dir = Path(dataset_dir)
         self.jsonl_path = self.dataset_dir / "samples.jsonl"
         if not self.jsonl_path.exists():
             raise FileNotFoundError(f"JSONL dataset not found: {self.jsonl_path}")
 
+        if image_backend not in {"lazy_render", "pre_rendered"}:
+            raise ValueError(
+                "image_backend must be 'lazy_render' or 'pre_rendered', "
+                f"got {image_backend!r}"
+            )
+        if missing_image_policy not in {"error", "lazy_render"}:
+            raise ValueError(
+                "missing_image_policy must be 'error' or 'lazy_render', "
+                f"got {missing_image_policy!r}"
+            )
+        if image_backend == "pre_rendered" and rendered_image_dir is None:
+            raise ValueError(
+                "rendered_image_dir is required when image_backend='pre_rendered'."
+            )
+
         self.split = split
         self.h_snr = float(h_snr)
         self.c_snr = float(c_snr)
         self.render_seed = render_seed
         self.image_size = tuple(image_size) if image_size is not None else None
+        self.image_backend = image_backend
+        self.rendered_image_dir = (
+            Path(rendered_image_dir) if rendered_image_dir is not None else None
+        )
+        self.missing_image_policy = missing_image_policy
         self.transform = NMRMessageTransform(
             task_probs=task_probs,
             seed=seed,
@@ -854,7 +877,9 @@ class LazyNMRJsonlDataset(Dataset):
             return json.loads(handle.readline())
 
     def _render_images(self, sample: dict[str, Any]) -> tuple[PILImage.Image, PILImage.Image]:
-        """Render 1H and 13C images for one sample."""
+        """Return 1H and 13C images for one sample."""
+        if self.image_backend == "pre_rendered":
+            return self._load_pre_rendered_images(sample)
         return render_sample_images(
             sample,
             h_snr=self.h_snr,
@@ -862,6 +887,41 @@ class LazyNMRJsonlDataset(Dataset):
             render_seed=self.render_seed,
             image_size=self.image_size,
         )
+
+    def _rendered_image_path(self, sample: dict[str, Any], nucleus: str) -> Path:
+        """Return the expected pre-rendered PNG path for one sample image."""
+        if self.rendered_image_dir is None:
+            raise RuntimeError("rendered_image_dir is not configured.")
+        sample_id = str(sample.get("id", "unknown"))
+        cache_key = _safe_cache_key(sample_id)
+        return self.rendered_image_dir / f"{cache_key}_{nucleus}.png"
+
+    def _load_pre_rendered_images(
+        self,
+        sample: dict[str, Any],
+    ) -> tuple[PILImage.Image, PILImage.Image]:
+        """Load pre-rendered 1H and 13C PNGs for one sample."""
+        h_path = self._rendered_image_path(sample, "1h")
+        c_path = self._rendered_image_path(sample, "13c")
+        missing = [str(path) for path in [h_path, c_path] if not path.exists()]
+        if missing:
+            if self.missing_image_policy == "lazy_render":
+                return render_sample_images(
+                    sample,
+                    h_snr=self.h_snr,
+                    c_snr=self.c_snr,
+                    render_seed=self.render_seed,
+                    image_size=self.image_size,
+                )
+            raise FileNotFoundError(
+                "Missing pre-rendered NMR image(s): " + ", ".join(missing)
+            )
+
+        with PILImage.open(h_path) as h_image:
+            h_loaded = _resize_image(h_image, self.image_size)
+        with PILImage.open(c_path) as c_image:
+            c_loaded = _resize_image(c_image, self.image_size)
+        return h_loaded, c_loaded
 
     def __getitem__(self, idx: int) -> dict[str, Any]:
         """Return one multimodal instruction sample."""
@@ -889,6 +949,9 @@ def load_lazy_nmr_dataset(
     c_snr: float = 300.0,
     render_seed: int | None = 3407,
     image_size: tuple[int, int] | list[int] | None = None,
+    image_backend: str = "lazy_render",
+    rendered_image_dir: str | Path | None = None,
+    missing_image_policy: str = "error",
 ) -> LazyNMRJsonlDataset:
     """Load a lazy JSONL-backed NMR instruction dataset."""
     return LazyNMRJsonlDataset(
@@ -902,6 +965,9 @@ def load_lazy_nmr_dataset(
         c_snr=c_snr,
         render_seed=render_seed,
         image_size=image_size,
+        image_backend=image_backend,
+        rendered_image_dir=rendered_image_dir,
+        missing_image_policy=missing_image_policy,
     )
 
 

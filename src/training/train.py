@@ -60,6 +60,9 @@ def main(config: dict[str, Any]) -> None:
             c_snr=float(config.get("c_snr", 300.0)),
             render_seed=config.get("render_seed", seed),
             image_size=config.get("image_size"),
+            image_backend=config.get("image_backend", "lazy_render"),
+            rendered_image_dir=config.get("rendered_image_dir"),
+            missing_image_policy=config.get("missing_image_policy", "error"),
         )
         eval_ds = load_lazy_nmr_dataset(
             dataset_dir,
@@ -71,6 +74,9 @@ def main(config: dict[str, Any]) -> None:
             c_snr=float(config.get("c_snr", 300.0)),
             render_seed=config.get("render_seed", seed),
             image_size=config.get("image_size"),
+            image_backend=config.get("image_backend", "lazy_render"),
+            rendered_image_dir=config.get("rendered_image_dir"),
+            missing_image_policy=config.get("missing_image_policy", "error"),
         )
     else:
         full_ds = load_nmr_dataset(
@@ -184,6 +190,8 @@ def main(config: dict[str, Any]) -> None:
             "target_format": config.get("target_format", "smiles"),
             "include_formula": config.get("include_formula", True),
             "dataset_backend": dataset_backend,
+            "image_backend": config.get("image_backend", "lazy_render"),
+            "rendered_image_dir": config.get("rendered_image_dir"),
             "train_split_name": train_split_name,
             "eval_split_name": eval_split_name,
         },
