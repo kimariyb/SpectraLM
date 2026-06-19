@@ -1,0 +1,354 @@
+"""Curate training subsets from a paired JSONL dataset manifest.
+
+This script does not copy ``samples.jsonl``.  It reads ``manifest.csv``,
+applies lightweight QC filters, creates scaffold-balanced ranked id lists, and
+writes named subset files such as:
+
+- ``subsets/clean_50k_train_ids.txt``
+- ``subsets/clean_50k_val_ids.txt``
+- ``subsets/clean_50k_test_ids.txt``
+
+Training configs can point ``train_split_name`` and ``eval_split_name`` at
+these names while reusing the same paired JSONL mother dataset.
+"""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import json
+import random
+import sys
+from collections import Counter, defaultdict
+from pathlib import Path
+from typing import Any
+
+
+def _read_manifest(path: str | Path) -> list[dict[str, Any]]:
+    """Read manifest rows from CSV."""
+    with Path(path).open("r", encoding="utf-8", newline="") as handle:
+        return list(csv.DictReader(handle))
+
+
+def _write_ids(path: Path, rows: list[dict[str, Any]]) -> None:
+    """Write sample ids, one per line."""
+    ids = [str(row["id"]) for row in rows if row.get("id")]
+    path.write_text("\n".join(ids) + ("\n" if ids else ""), encoding="utf-8")
+
+
+def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
+    """Write selected manifest rows for inspection."""
+    if not rows:
+        path.write_text("", encoding="utf-8")
+        return
+    fields = list(rows[0].keys())
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fields)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def _to_int(value: Any, default: int = 0) -> int:
+    """Parse integer-like manifest values."""
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def _solvent_known(value: Any) -> bool:
+    """Return whether a solvent value carries useful information."""
+    text = str(value or "").strip()
+    return bool(text and text.lower() not in {"nan", "none", "not_known", "unknown"})
+
+
+def _row_passes_filters(
+    row: dict[str, Any],
+    *,
+    min_heavy_atoms: int,
+    max_heavy_atoms: int,
+    min_h_peaks: int,
+    max_h_peaks: int,
+    min_c_peaks: int,
+    max_c_peaks: int,
+    solvent_policy: str,
+) -> tuple[bool, str]:
+    """Apply manifest-level QC filters to one row."""
+    if row.get("qc_status") != "pass":
+        return False, "manifest_qc_fail"
+
+    heavy = _to_int(row.get("heavy_atom_count"))
+    h_peaks = _to_int(row.get("h_peak_count"))
+    c_peaks = _to_int(row.get("c_peak_count"))
+
+    if heavy < min_heavy_atoms:
+        return False, "too_few_heavy_atoms"
+    if heavy > max_heavy_atoms:
+        return False, "too_many_heavy_atoms"
+    if h_peaks < min_h_peaks:
+        return False, "too_few_1h_peaks"
+    if h_peaks > max_h_peaks:
+        return False, "too_many_1h_peaks"
+    if c_peaks < min_c_peaks:
+        return False, "too_few_13c_peaks"
+    if c_peaks > max_c_peaks:
+        return False, "too_many_13c_peaks"
+
+    h_solvent = str(row.get("h_solvent", "")).strip()
+    c_solvent = str(row.get("c_solvent", "")).strip()
+    if solvent_policy == "known" and not (
+        _solvent_known(h_solvent) and _solvent_known(c_solvent)
+    ):
+        return False, "unknown_solvent"
+    if solvent_policy == "matched" and h_solvent != c_solvent:
+        return False, "solvent_mismatch"
+    if solvent_policy == "cdcl3" and not (
+        h_solvent == "CDCl3" and c_solvent == "CDCl3"
+    ):
+        return False, "not_cdcl3"
+
+    return True, ""
+
+
+def filter_rows(
+    rows: list[dict[str, Any]],
+    *,
+    min_heavy_atoms: int = 2,
+    max_heavy_atoms: int = 60,
+    min_h_peaks: int = 1,
+    max_h_peaks: int = 80,
+    min_c_peaks: int = 1,
+    max_c_peaks: int = 120,
+    solvent_policy: str = "any",
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    """Filter manifest rows and return kept rows plus rejection counts."""
+    kept: list[dict[str, Any]] = []
+    rejected: Counter[str] = Counter()
+
+    for row in rows:
+        ok, reason = _row_passes_filters(
+            row,
+            min_heavy_atoms=min_heavy_atoms,
+            max_heavy_atoms=max_heavy_atoms,
+            min_h_peaks=min_h_peaks,
+            max_h_peaks=max_h_peaks,
+            min_c_peaks=min_c_peaks,
+            max_c_peaks=max_c_peaks,
+            solvent_policy=solvent_policy,
+        )
+        if ok:
+            kept.append(row)
+        else:
+            rejected[reason] += 1
+
+    return kept, dict(rejected)
+
+
+def scaffold_balanced_order(
+    rows: list[dict[str, Any]],
+    *,
+    seed: int = 3407,
+) -> list[dict[str, Any]]:
+    """Return rows in a deterministic scaffold-balanced order.
+
+    The ordering is intended for nested scaling subsets: the first 50k rows are
+    a scaffold-diverse prefix of the first 100k rows, etc.
+    """
+    rng = random.Random(seed)
+    by_scaffold: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        scaffold = str(row.get("murcko_scaffold") or row.get("canonical_smiles") or row["id"])
+        by_scaffold[scaffold].append(row)
+
+    for group in by_scaffold.values():
+        group.sort(
+            key=lambda item: (
+                _to_int(item.get("heavy_atom_count")),
+                _to_int(item.get("h_peak_count")) + _to_int(item.get("c_peak_count")),
+                str(item.get("id", "")),
+            )
+        )
+        rng.shuffle(group)
+
+    scaffolds = list(by_scaffold)
+    rng.shuffle(scaffolds)
+
+    ordered: list[dict[str, Any]] = []
+    active = scaffolds
+    while active:
+        next_active: list[str] = []
+        for scaffold in active:
+            group = by_scaffold[scaffold]
+            if group:
+                ordered.append(group.pop())
+            if group:
+                next_active.append(scaffold)
+        active = next_active
+    return ordered
+
+
+def summarize_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Summarize selected manifest rows."""
+    split_counts = Counter(row.get("split", "") for row in rows)
+    solvents = Counter(
+        (
+            str(row.get("h_solvent", "")).strip(),
+            str(row.get("c_solvent", "")).strip(),
+        )
+        for row in rows
+    )
+    return {
+        "samples": len(rows),
+        "split_counts": dict(split_counts),
+        "unique_scaffolds": len({row.get("murcko_scaffold", "") for row in rows}),
+        "heavy_atom_min": min((_to_int(row.get("heavy_atom_count")) for row in rows), default=0),
+        "heavy_atom_max": max((_to_int(row.get("heavy_atom_count")) for row in rows), default=0),
+        "top_solvent_pairs": [
+            {"h_solvent": pair[0], "c_solvent": pair[1], "count": count}
+            for pair, count in solvents.most_common(10)
+        ],
+    }
+
+
+def build_subsets(
+    manifest_rows: list[dict[str, Any]],
+    out_dir: str | Path,
+    *,
+    subset_sizes: list[int],
+    val_size: int = 5000,
+    test_size: int = 5000,
+    prefix: str = "clean",
+    seed: int = 3407,
+    min_heavy_atoms: int = 2,
+    max_heavy_atoms: int = 60,
+    min_h_peaks: int = 1,
+    max_h_peaks: int = 80,
+    min_c_peaks: int = 1,
+    max_c_peaks: int = 120,
+    solvent_policy: str = "any",
+) -> dict[str, Any]:
+    """Build named subset id files from manifest rows."""
+    out_path = Path(out_dir)
+    out_path.mkdir(parents=True, exist_ok=True)
+
+    filtered, rejected = filter_rows(
+        manifest_rows,
+        min_heavy_atoms=min_heavy_atoms,
+        max_heavy_atoms=max_heavy_atoms,
+        min_h_peaks=min_h_peaks,
+        max_h_peaks=max_h_peaks,
+        min_c_peaks=min_c_peaks,
+        max_c_peaks=max_c_peaks,
+        solvent_policy=solvent_policy,
+    )
+
+    rows_by_split = {
+        split: [row for row in filtered if row.get("split") == split]
+        for split in ["train", "val", "test"]
+    }
+    ranked = {
+        split: scaffold_balanced_order(rows, seed=seed + idx)
+        for idx, (split, rows) in enumerate(rows_by_split.items())
+    }
+
+    summary: dict[str, Any] = {
+        "filter": {
+            "min_heavy_atoms": min_heavy_atoms,
+            "max_heavy_atoms": max_heavy_atoms,
+            "min_h_peaks": min_h_peaks,
+            "max_h_peaks": max_h_peaks,
+            "min_c_peaks": min_c_peaks,
+            "max_c_peaks": max_c_peaks,
+            "solvent_policy": solvent_policy,
+        },
+        "input_rows": len(manifest_rows),
+        "filtered_rows": len(filtered),
+        "rejected_counts": rejected,
+        "available_by_split": {split: len(rows) for split, rows in ranked.items()},
+        "subsets": {},
+    }
+
+    shared_val = ranked["val"][: min(val_size, len(ranked["val"]))]
+    shared_test = ranked["test"][: min(test_size, len(ranked["test"]))]
+
+    for requested_size in sorted(set(int(size) for size in subset_sizes)):
+        selected_train = ranked["train"][: min(requested_size, len(ranked["train"]))]
+        name = f"{prefix}_{requested_size // 1000}k" if requested_size >= 1000 else f"{prefix}_{requested_size}"
+
+        selected = {
+            "train": selected_train,
+            "val": shared_val,
+            "test": shared_test,
+        }
+        for split, rows in selected.items():
+            _write_ids(out_path / f"{name}_{split}_ids.txt", rows)
+            _write_csv(out_path / f"{name}_{split}_manifest.csv", rows)
+
+        summary["subsets"][name] = {
+            split: summarize_rows(rows)
+            for split, rows in selected.items()
+        }
+
+    (out_path / "curation_summary.json").write_text(
+        json.dumps(summary, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return summary
+
+
+def main() -> None:
+    """CLI entrypoint."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "dataset_dir",
+        help="Paired JSONL dataset directory containing manifest.csv.",
+    )
+    parser.add_argument("--out-dir", default=None)
+    parser.add_argument(
+        "--subset-sizes",
+        type=int,
+        nargs="+",
+        default=[50_000, 100_000, 300_000],
+    )
+    parser.add_argument("--val-size", type=int, default=5000)
+    parser.add_argument("--test-size", type=int, default=5000)
+    parser.add_argument("--prefix", default="clean")
+    parser.add_argument("--seed", type=int, default=3407)
+    parser.add_argument("--min-heavy-atoms", type=int, default=2)
+    parser.add_argument("--max-heavy-atoms", type=int, default=60)
+    parser.add_argument("--min-h-peaks", type=int, default=1)
+    parser.add_argument("--max-h-peaks", type=int, default=80)
+    parser.add_argument("--min-c-peaks", type=int, default=1)
+    parser.add_argument("--max-c-peaks", type=int, default=120)
+    parser.add_argument(
+        "--solvent-policy",
+        choices=["any", "known", "matched", "cdcl3"],
+        default="any",
+    )
+    args = parser.parse_args()
+
+    dataset_dir = Path(args.dataset_dir)
+    out_dir = Path(args.out_dir) if args.out_dir else dataset_dir / "subsets"
+    rows = _read_manifest(dataset_dir / "manifest.csv")
+    summary = build_subsets(
+        rows,
+        out_dir,
+        subset_sizes=args.subset_sizes,
+        val_size=args.val_size,
+        test_size=args.test_size,
+        prefix=args.prefix,
+        seed=args.seed,
+        min_heavy_atoms=args.min_heavy_atoms,
+        max_heavy_atoms=args.max_heavy_atoms,
+        min_h_peaks=args.min_h_peaks,
+        max_h_peaks=args.max_h_peaks,
+        min_c_peaks=args.min_c_peaks,
+        max_c_peaks=args.max_c_peaks,
+        solvent_policy=args.solvent_policy,
+    )
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
+    print(f"Wrote curated subset id files to {out_dir}")
+
+
+if __name__ == "__main__":
+    main()

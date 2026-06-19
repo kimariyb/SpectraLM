@@ -1,0 +1,81 @@
+"""Tests for manifest-driven JSONL subset curation."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from script.curate_jsonl_subsets import build_subsets, filter_rows
+
+
+def _manifest_row(
+    sample_id: str,
+    split: str,
+    scaffold: str,
+    *,
+    heavy_atoms: int = 8,
+    h_peaks: int = 3,
+    c_peaks: int = 4,
+    solvent: str = "CDCl3",
+    qc_status: str = "pass",
+) -> dict[str, str]:
+    return {
+        "id": sample_id,
+        "split": split,
+        "qc_status": qc_status,
+        "qc_reason": "",
+        "canonical_smiles": f"C{sample_id}",
+        "molecular_formula": "C2H6O",
+        "murcko_scaffold": scaffold,
+        "heavy_atom_count": str(heavy_atoms),
+        "h_peak_count": str(h_peaks),
+        "c_peak_count": str(c_peaks),
+        "h_solvent": solvent,
+        "c_solvent": solvent,
+        "h_frequency": "400 MHz",
+        "c_frequency": "101 MHz",
+    }
+
+
+def test_filter_rows_rejects_out_of_range_manifest_rows() -> None:
+    """Manifest QC filters should reject obvious low-quality records."""
+    rows = [
+        _manifest_row("ok", "train", "s1"),
+        _manifest_row("too-big", "train", "s2", heavy_atoms=99),
+        _manifest_row("no-peaks", "train", "s3", h_peaks=0),
+    ]
+
+    kept, rejected = filter_rows(rows, max_heavy_atoms=60)
+
+    assert [row["id"] for row in kept] == ["ok"]
+    assert rejected["too_many_heavy_atoms"] == 1
+    assert rejected["too_few_1h_peaks"] == 1
+
+
+def test_build_subsets_writes_nested_scaling_id_files(tmp_path: Path) -> None:
+    """Curation should write train/val/test ids for named nested subsets."""
+    rows = []
+    for idx in range(6):
+        rows.append(_manifest_row(f"train-{idx}", "train", f"s{idx % 3}"))
+    for idx in range(3):
+        rows.append(_manifest_row(f"val-{idx}", "val", f"v{idx}"))
+        rows.append(_manifest_row(f"test-{idx}", "test", f"t{idx}"))
+
+    summary = build_subsets(
+        rows,
+        tmp_path,
+        subset_sizes=[2, 4],
+        val_size=2,
+        test_size=2,
+        prefix="clean",
+        seed=1,
+    )
+
+    train_2 = (tmp_path / "clean_2_train_ids.txt").read_text(encoding="utf-8").splitlines()
+    train_4 = (tmp_path / "clean_4_train_ids.txt").read_text(encoding="utf-8").splitlines()
+    val_2 = (tmp_path / "clean_2_val_ids.txt").read_text(encoding="utf-8").splitlines()
+
+    assert len(train_2) == 2
+    assert len(train_4) == 4
+    assert train_4[:2] == train_2
+    assert len(val_2) == 2
+    assert summary["subsets"]["clean_2"]["train"]["samples"] == 2

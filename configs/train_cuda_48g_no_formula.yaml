@@ -9,7 +9,8 @@ use_gradient_checkpointing: unsloth
 # Dataset
 dataset_dir: dataset/paired_jsonl_full
 dataset_backend: lazy_jsonl
-eval_split_name: validation
+train_split_name: clean_100k_train
+eval_split_name: clean_100k_val
 target_format: smiles
 include_formula: false
 h_snr: 500.0

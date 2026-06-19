@@ -96,6 +96,34 @@ def test_resolve_jsonl_samples_with_split_ids(tmp_path: Path, ethanol_sample) ->
     assert [sample["id"] for sample in val] == ["sample-1"]
 
 
+def test_resolve_jsonl_samples_with_nested_subset_ids(tmp_path: Path, ethanol_sample) -> None:
+    """Named curation subsets under subsets/ should be valid split names."""
+    samples = []
+    for idx in range(3):
+        sample = dict(ethanol_sample)
+        sample["id"] = f"sample-{idx}"
+        samples.append(sample)
+
+    (tmp_path / "samples.jsonl").write_text(
+        "\n".join(json.dumps(sample) for sample in samples) + "\n",
+        encoding="utf-8",
+    )
+    subsets_dir = tmp_path / "subsets"
+    subsets_dir.mkdir()
+    (subsets_dir / "clean_50k_train_ids.txt").write_text(
+        "sample-1\nsample-2\n",
+        encoding="utf-8",
+    )
+
+    train = _resolve_and_load_samples(
+        tmp_path,
+        split="clean_50k_train",
+        train_size=0.8,
+    )
+
+    assert [sample["id"] for sample in train] == ["sample-1", "sample-2"]
+
+
 def test_load_nmr_dataset_from_jsonl_directory(tmp_path: Path, ethanol_sample) -> None:
     """HF builder should support samples.jsonl plus split id files."""
     sample = dict(ethanol_sample)

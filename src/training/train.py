@@ -45,12 +45,14 @@ def main(config: dict[str, Any]) -> None:
     dataset_dir: str = config["dataset_dir"]
     train_size: float = float(config.get("train_size", 0.8))
     eval_split: float = float(config.get("eval_split", 0.1))
+    train_split_name: str = config.get("train_split_name", "train")
+    eval_split_name: str = config.get("eval_split_name", "validation")
 
     dataset_backend = config.get("dataset_backend", "hf")
     if dataset_backend == "lazy_jsonl":
         train_ds = load_lazy_nmr_dataset(
             dataset_dir,
-            split="train",
+            split=train_split_name,
             target_format=config.get("target_format", "smiles"),
             include_formula=config.get("include_formula", True),
             seed=seed,
@@ -61,7 +63,7 @@ def main(config: dict[str, Any]) -> None:
         )
         eval_ds = load_lazy_nmr_dataset(
             dataset_dir,
-            split=config.get("eval_split_name", "validation"),
+            split=eval_split_name,
             target_format=config.get("target_format", "smiles"),
             include_formula=config.get("include_formula", True),
             seed=seed,
@@ -73,7 +75,7 @@ def main(config: dict[str, Any]) -> None:
     else:
         full_ds = load_nmr_dataset(
             dataset_dir,
-            split="train",
+            split=train_split_name,
             train_size=train_size,
             render_cache_dir=config.get("train_cache_dir"),
             render_cache_version=config.get("cache_version", "1"),
@@ -182,6 +184,8 @@ def main(config: dict[str, Any]) -> None:
             "target_format": config.get("target_format", "smiles"),
             "include_formula": config.get("include_formula", True),
             "dataset_backend": dataset_backend,
+            "train_split_name": train_split_name,
+            "eval_split_name": eval_split_name,
         },
         run_name="nmr_vl_sft",
     )

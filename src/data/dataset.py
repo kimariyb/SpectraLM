@@ -179,7 +179,10 @@ def _split_ids_path(base: Path, split: str) -> Path:
     """Return the id-list path for a requested split name."""
     aliases = {"validation": "val"}
     split_key = aliases.get(split, split)
-    return base / f"{split_key}_ids.txt"
+    direct = base / f"{split_key}_ids.txt"
+    if direct.exists():
+        return direct
+    return base / "subsets" / f"{split_key}_ids.txt"
 
 
 def _load_jsonl_samples(
