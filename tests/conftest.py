@@ -9,13 +9,7 @@ import pytest
 
 @pytest.fixture
 def ethanol_sample() -> dict[str, Any]:
-    """Return a small paired-NMR ethanol sample.
-
-    Returns
-    -------
-    dict[str, Any]
-        Normalized SpectraLM sample.
-    """
+    """Return a small paired-NMR ethanol sample."""
     return {
         "id": "ethanol",
         "smiles": "CCO",
@@ -33,10 +27,24 @@ def ethanol_sample() -> dict[str, Any]:
             "frequency": "400 MHz",
             "solvent": "CDCl3",
             "peaks": [
-                {"shift": 3.65, "multiplicity": "q", "J": [7.0], "integration": 2.0},
-                {"shift": 1.18, "multiplicity": "t", "J": [7.0], "integration": 3.0},
-                {"shift": 2.0, "multiplicity": "brs", "J": [], "integration": 1.0},
+                {
+                    "shift": 3.65,
+                    "multiplicity": "q",
+                    "J": [7.0],
+                    "integration": 2.0,
+                },
+                {
+                    "shift": 1.18,
+                    "multiplicity": "t",
+                    "J": [7.0],
+                    "integration": 3.0,
+                },
+                {
+                    "shift": 2.0,
+                    "multiplicity": "brs",
+                    "J": [],
+                    "integration": 1.0,
+                },
             ],
         },
     }
-

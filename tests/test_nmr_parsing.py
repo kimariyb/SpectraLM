@@ -1,6 +1,11 @@
 """Tests for NMR peak parsing utilities."""
 
-from spectralm.data.utils import normalize_multiplicity, parse_couplings, parse_frequency_mhz, process_1h_peaks
+from src.data.utils import (
+    normalize_multiplicity,
+    parse_couplings,
+    parse_frequency_mhz,
+    process_1h_peaks,
+)
 
 
 def test_parse_couplings_from_mixed_values() -> None:
@@ -18,12 +23,21 @@ def test_normalize_multiplicity_aliases() -> None:
 def test_process_1h_peaks_tuple_rows() -> None:
     """Raw proton tuples should become normalized dictionaries."""
     peaks = process_1h_peaks([(1.23, "app t", ["7.1 Hz"], "3H")])
-    assert peaks == [{"shift": 1.23, "multiplicity": "t", "J": [7.1], "integration": 3.0}]
+    assert peaks == [
+        {
+            "shift": 1.23,
+            "multiplicity": "t",
+            "J": [7.1],
+            "integration": 3.0,
+        }
+    ]
 
 
 def test_process_1h_peaks_source_tuple_rows() -> None:
     """Source proton tuples should parse multiplicity-first rows."""
-    peaks = process_1h_peaks([("m", [], "2H", 7.27, 7.24), ("d", ["3.8Hz"], "2H", 3.68, 3.68)])
+    peaks = process_1h_peaks(
+        [("m", [], "2H", 7.27, 7.24), ("d", ["3.8Hz"], "2H", 3.68, 3.68)]
+    )
     assert peaks == [
         {
             "shift": 7.255,

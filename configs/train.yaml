@@ -2,16 +2,24 @@
 # Usage: python -m src.training.train configs/train.yaml
 
 # Model
-model_path: /mnt/data/kimariyb/models/Qwen3-VL-8B-Instruct
+# model_path: /mnt/data/kimariyb/models/Qwen3-VL-8B-Instruct
+model_path: /Users/kimariyb/d/models/modelscope/Qwen3-VL-4B-Instruct
 max_seq_length: 8192
 load_in_4bit: true
 
 # Dataset
 dataset_dir: dataset/subsets
+dataset_backend: hf              # hf | lazy_jsonl
 train_size: 0.8             
 eval_split: 0.1             
+eval_split_name: validation
 train_cache_dir: cache/train
 cache_version: "v1"             
+target_format: smiles            # smiles | reasoning
+h_snr: 500.0
+c_snr: 300.0
+render_seed: 3407
+# image_size: [448, 448]
 
 # Training
 output_dir: outputs/spectralm-qwen3-vl-8b

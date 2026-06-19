@@ -10,8 +10,7 @@ from typing import Any
 
 import selfies as sf
 from rdkit import Chem, DataStructs
-from skfp.fingerprints import ECFPFingerprint
-from skfp.distances import tanimoto_binary_similarity
+from rdkit.Chem import rdMolDescriptors
 
 from src.config import load_config
 from src.data.molecules import canonicalize_smiles, functional_group_labels, sample_smiles
@@ -117,9 +116,27 @@ def tanimoto_similarity(predicted: str | None, reference: str | None) -> float:
     float
         Tanimoto similarity, or zero for invalid molecules.
     """
-    ecfp = ECFPFingerprint(fp_size=1024, radius=2, n_jobs=-1)
-    vec_a, vec_b = ecfp.transform(predicted), ecfp.transform(reference)
-    return float(tanimoto_binary_similarity(vec_a, vec_b))
+    pred_canonical = canonicalize_smiles(predicted)
+    ref_canonical = canonicalize_smiles(reference)
+    if pred_canonical is None or ref_canonical is None:
+        return 0.0
+
+    pred_mol = Chem.MolFromSmiles(pred_canonical)
+    ref_mol = Chem.MolFromSmiles(ref_canonical)
+    if pred_mol is None or ref_mol is None:
+        return 0.0
+
+    pred_fp = rdMolDescriptors.GetMorganFingerprintAsBitVect(
+        pred_mol,
+        radius=2,
+        nBits=1024,
+    )
+    ref_fp = rdMolDescriptors.GetMorganFingerprintAsBitVect(
+        ref_mol,
+        radius=2,
+        nBits=1024,
+    )
+    return float(DataStructs.TanimotoSimilarity(pred_fp, ref_fp))
 
 
 def functional_group_jaccard(predicted: str | None, reference: str | None) -> float:

@@ -1,0 +1,38 @@
+# SpectraLM lazy-JSONL pilot training configuration
+# Usage:
+# source /opt/miniconda3/etc/profile.d/conda.sh && conda activate ml
+# python -m src.training.train configs/train_pilot_jsonl.yaml
+
+# Model
+model_path: /Users/kimariyb/d/models/modelscope/Qwen3-VL-4B-Instruct
+max_seq_length: 4096
+load_in_4bit: true
+
+# Dataset
+dataset_dir: dataset/paired_jsonl_pilot_50k
+dataset_backend: lazy_jsonl
+eval_split_name: validation
+target_format: smiles
+h_snr: 500.0
+c_snr: 300.0
+render_seed: 3407
+image_size: [448, 448]
+max_train_samples: 512
+max_eval_samples: 128
+
+# Training smoke run
+dry_run: false
+output_dir: outputs/pilot-jsonl-qwen3-vl-4b
+per_device_train_batch_size: 1
+gradient_accumulation_steps: 4
+lora_r: 16
+lora_alpha: 32
+num_train_epochs: 1
+max_steps: 50
+learning_rate: 2.0e-4
+weight_decay: 0.01
+warmup_steps: 5
+logging_steps: 1
+eval_steps: 25
+save_steps: 25
+seed: 3407

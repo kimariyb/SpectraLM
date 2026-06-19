@@ -478,7 +478,11 @@ def run(config: dict[str, Any]) -> None:
         fingerprints, feature_rows = load_feature_outputs(fingerprint_path, index_path)
     else:
         print("Computing fingerprints ...")
-        fingerprints, feature_rows = build_sample_features(samples, config)
+        fingerprints, feature_rows = build_sample_features(
+            samples,
+            bits=int(config.get("fingerprint_bits", 1024)),
+            radius=int(config.get("fingerprint_radius", 2)),
+        )
         save_feature_outputs(fingerprints, feature_rows, fingerprint_path, index_path)
 
     # --- Clustering ---------------------------------------------------------

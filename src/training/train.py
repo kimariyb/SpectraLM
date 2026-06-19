@@ -11,13 +11,23 @@ import sys
 import torch
 from typing import Any
 from pathlib import Path
-from src.config import TrainingLoggerCallback, load_config
-from src.logger import TrainingLogger
-from src.data.dataset import load_nmr_dataset
+from torch.utils.data import Subset
 from unsloth import FastVisionModel
 from unsloth.trainer import UnslothVisionDataCollator
+from src.config import TrainingLoggerCallback, load_config
+from src.logger import TrainingLogger
+from src.data.dataset import load_lazy_nmr_dataset, load_nmr_dataset
 from trl import SFTConfig, SFTTrainer
 
+
+def _limit_dataset(dataset, max_samples: int | None):
+    """Return a deterministic prefix subset when max_samples is configured."""
+    if max_samples is None:
+        return dataset
+    n = min(int(max_samples), len(dataset))
+    if hasattr(dataset, "select"):
+        return dataset.select(range(n))
+    return Subset(dataset, range(n))
 
 
 def main(config: dict[str, Any]) -> None:
@@ -31,15 +41,76 @@ def main(config: dict[str, Any]) -> None:
     """
     seed: int = config.get("seed", 3407)
 
-    # 1. Load model
+    # 1. Build datasets first so dry-run works without loading a VLM.
+    dataset_dir: str = config["dataset_dir"]
+    train_size: float = float(config.get("train_size", 0.8))
+    eval_split: float = float(config.get("eval_split", 0.1))
+
+    dataset_backend = config.get("dataset_backend", "hf")
+    if dataset_backend == "lazy_jsonl":
+        train_ds = load_lazy_nmr_dataset(
+            dataset_dir,
+            split="train",
+            target_format=config.get("target_format", "smiles"),
+            include_formula=config.get("include_formula", True),
+            seed=seed,
+            h_snr=float(config.get("h_snr", 500.0)),
+            c_snr=float(config.get("c_snr", 300.0)),
+            render_seed=config.get("render_seed", seed),
+            image_size=config.get("image_size"),
+        )
+        eval_ds = load_lazy_nmr_dataset(
+            dataset_dir,
+            split=config.get("eval_split_name", "validation"),
+            target_format=config.get("target_format", "smiles"),
+            include_formula=config.get("include_formula", True),
+            seed=seed,
+            h_snr=float(config.get("h_snr", 500.0)),
+            c_snr=float(config.get("c_snr", 300.0)),
+            render_seed=config.get("render_seed", seed),
+            image_size=config.get("image_size"),
+        )
+    else:
+        full_ds = load_nmr_dataset(
+            dataset_dir,
+            split="train",
+            train_size=train_size,
+            render_cache_dir=config.get("train_cache_dir"),
+            render_cache_version=config.get("cache_version", "1"),
+            target_format=config.get("target_format", "smiles"),
+            include_formula=config.get("include_formula", True),
+            seed=seed,
+        )
+
+        # Split a fraction for periodic evaluation
+        split_ds = full_ds.train_test_split(
+            test_size=eval_split, seed=seed
+        )
+        train_ds = split_ds["train"].shuffle(seed=seed)
+        eval_ds = split_ds["test"]
+
+    train_ds = _limit_dataset(train_ds, config.get("max_train_samples"))
+    eval_ds = _limit_dataset(eval_ds, config.get("max_eval_samples"))
+
+    print(f"Train samples: {len(train_ds)}  |  Eval samples: {len(eval_ds)}")
+
+    if config.get("dry_run", False):
+        first = train_ds[0]
+        print("Dry run complete.")
+        print(f"First sample keys: {list(first.keys())}")
+        if "messages" in first:
+            print(f"First sample roles: {[msg['role'] for msg in first['messages']]}")
+        return
+
+    # 2. Load model
     model, tokenizer = FastVisionModel.from_pretrained(
         config["model_path"],
         max_seq_length=config.get("max_seq_length", 8192),
         load_in_4bit=config.get("load_in_4bit", True),
-        use_gradient_checkpointing="unsloth",
+        use_gradient_checkpointing=config.get("use_gradient_checkpointing", "unsloth"),
     )
 
-    # 2. Apply LoRA adapters
+    # 3. Apply LoRA adapters
     model = FastVisionModel.get_peft_model(
         model,
         finetune_vision_layers=True,
@@ -48,35 +119,12 @@ def main(config: dict[str, Any]) -> None:
         finetune_mlp_modules=True,
         r=config.get("lora_r", 16),
         lora_alpha=config.get("lora_alpha", 16),
-        lora_dropout=0,
+        lora_dropout=float(config.get("lora_dropout", 0)),
         bias="none",
         random_state=seed,
         use_rslora=False,
         loftq_config=None,
     )
-
-    # 3. Build datasets
-    dataset_dir: str = config["dataset_dir"]
-    train_size: float = float(config.get("train_size", 0.8))
-    eval_split: float = float(config.get("eval_split", 0.1))
-
-    full_ds = load_nmr_dataset(
-        dataset_dir,
-        split="train",
-        train_size=train_size,
-        render_cache_dir=config.get("train_cache_dir"),
-        render_cache_version=config.get("cache_version", "1"),
-        seed=seed,
-    )
-
-    # Split a fraction for periodic evaluation
-    split_ds = full_ds.train_test_split(
-        test_size=eval_split, seed=seed
-    )
-    train_ds = split_ds["train"].shuffle(seed=seed)
-    eval_ds = split_ds["test"]
-
-    print(f"Train samples: {len(train_ds)}  |  Eval samples: {len(eval_ds)}")
 
     # 4. Train
     FastVisionModel.for_training(model)
@@ -97,26 +145,30 @@ def main(config: dict[str, Any]) -> None:
         
         "save_strategy": "steps",
         "save_steps": config.get("save_steps", 50),
-        "save_total_limit": 5,
+        "save_total_limit": int(config.get("save_total_limit", 5)),
         
         "metric_for_best_model": "eval_loss", 
         "greater_is_better": False,          
         "load_best_model_at_end": True,       
 
-        "optim": "adamw_8bit",
+        "optim": config.get("optim", "adamw_8bit"),
         "weight_decay": float(config.get("weight_decay", 0.001)),
-        "lr_scheduler_type": "cosine_with_restarts",
+        "lr_scheduler_type": config.get("lr_scheduler_type", "cosine_with_restarts"),
         "seed": seed,
         "output_dir": config.get("output_dir", "outputs"),
-        "report_to": "none",
+        "report_to": config.get("report_to", "none"),
         
         # Vision fine-tuning requirements
         "remove_unused_columns": False,
         "dataset_text_field": "",
         "dataset_kwargs": {"skip_prepare_dataset": True},
         "max_length": config.get("max_seq_length", 8192),
-        "bf16": True,
+        "bf16": bool(config.get("bf16", True)),
+        "fp16": bool(config.get("fp16", False)),
     }
+
+    if config.get("max_steps") is not None:
+        sft_kwargs["max_steps"] = int(config["max_steps"])
 
     training_logger = TrainingLogger(
         output_dir="outputs/logs",
@@ -127,6 +179,9 @@ def main(config: dict[str, Any]) -> None:
             "per_device_train_batch_size": sft_kwargs["per_device_train_batch_size"],
             "gradient_accumulation_steps": sft_kwargs['gradient_accumulation_steps'],
             "eval_steps": sft_kwargs['eval_steps'],
+            "target_format": config.get("target_format", "smiles"),
+            "include_formula": config.get("include_formula", True),
+            "dataset_backend": dataset_backend,
         },
         run_name="nmr_vl_sft",
     )

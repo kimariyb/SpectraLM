@@ -8,7 +8,7 @@ import sys
 # Allow running from project root without PYTHONPATH
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import uuid
+import hashlib
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +18,20 @@ from tqdm import tqdm
 from src.data.molecules import canonicalize_smiles, smiles_to_selfies
 from src.data.utils import process_13c_peaks, process_1h_peaks, safe_literal_eval
 from src.io import write_pickle
+
+
+def stable_sample_id(row: pd.Series) -> str:
+    """Build a deterministic sample identifier from structure and provenance."""
+    fields = [
+        row.get("canonical_smiles", ""),
+        row.get("Filename_13C", ""),
+        row.get("Page_in_file_para_13C", ""),
+        row.get("Filename_1H", ""),
+        row.get("Page_in_file_para_1H", ""),
+    ]
+    payload = "|".join(str(value) for value in fields)
+    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+    return f"nmr-{digest}"
 
 
 def row_to_spectra(row: pd.Series) -> dict[str, Any] | None:
@@ -33,8 +47,8 @@ def row_to_spectra(row: pd.Series) -> dict[str, Any] | None:
     dict[str, Any] | None
         Normalized sample, or ``None`` when structure encoding fails.
     """
-    smiles = row["SMILES"]
-    canonical_smiles = canonicalize_smiles(smiles)
+    smiles = row.get("SMILES") or row.get("SMILES_13C") or row.get("SMILES_1H")
+    canonical_smiles = row.get("canonical_smiles") or canonicalize_smiles(smiles)
     if canonical_smiles is None:
         return None
     
@@ -46,11 +60,27 @@ def row_to_spectra(row: pd.Series) -> dict[str, Any] | None:
     h_raw = safe_literal_eval(row["NMR_processed_1H"])
     
     return {
-        "id": str(uuid.uuid4()),
+        "id": stable_sample_id(row),
         "smiles": smiles,
         "canonical_smiles": canonical_smiles,
         "selfies": selfies,
-        "meta": {"source": "experimental"},
+        "meta": {
+            "source": "experimental",
+            "source_13c": {
+                "filename": row.get("Filename_13C"),
+                "page_mol": row.get("Page_in_file_mol_13C"),
+                "page_para": row.get("Page_in_file_para_13C"),
+                "location_mol": row.get("Location_in_page_mol_13C"),
+                "location_para": row.get("Location_in_page_para_13C"),
+            },
+            "source_1h": {
+                "filename": row.get("Filename_1H"),
+                "page_mol": row.get("Page_in_file_mol_1H"),
+                "page_para": row.get("Page_in_file_para_1H"),
+                "location_mol": row.get("Location_in_page_mol_1H"),
+                "location_para": row.get("Location_in_page_para_1H"),
+            },
+        },
         "13C_NMR": {
             "frequency": row.get("NMR_frequency_13C"),
             "solvent": row.get("NMR_solvent_13C"),
@@ -69,7 +99,7 @@ def row_to_spectra(row: pd.Series) -> dict[str, Any] | None:
 
 
 def merge_1h_13c_rows(df: pd.DataFrame) -> pd.DataFrame:
-    """Merge raw 1H and 13C NMR rows by SMILES.
+    """Merge raw 1H and 13C NMR rows by canonical SMILES.
 
     Parameters
     ----------
@@ -81,23 +111,37 @@ def merge_1h_13c_rows(df: pd.DataFrame) -> pd.DataFrame:
     pandas.DataFrame
         One row per molecule with paired 1H and 13C data.
     """
-    df_13c = df[df["NMR_type"] == "13C NMR"].copy().add_suffix("_13C")
-    df_1h = df[df["NMR_type"] == "1H NMR"].copy().add_suffix("_1H")
+    working = df.copy()
+    working["canonical_smiles"] = working["SMILES"].map(canonicalize_smiles)
+    working = working[working["canonical_smiles"].notna()].copy()
+
+    df_13c = working[working["NMR_type"] == "13C NMR"].copy().add_suffix("_13C")
+    df_1h = working[working["NMR_type"] == "1H NMR"].copy().add_suffix("_1H")
     
     merged = pd.merge(df_13c, df_1h, 
-                      left_on="SMILES_13C", right_on="SMILES_1H", how="inner")
+                      left_on="canonical_smiles_13C",
+                      right_on="canonical_smiles_1H",
+                      how="inner")
     merged["solvent_match_priority"] = (
         merged["NMR_solvent_13C"] == merged["NMR_solvent_1H"]
     ).astype(int)
     
     merged = merged.sort_values(
-        by=["SMILES_13C", "solvent_match_priority"],
+        by=["canonical_smiles_13C", "solvent_match_priority"],
         ascending=[True, False],
     )
-    merged = merged.drop_duplicates(subset=["SMILES_13C"], keep="first")
+    merged = merged.drop_duplicates(subset=["canonical_smiles_13C"], keep="first")
     merged["SMILES"] = merged["SMILES_13C"]
+    merged["canonical_smiles"] = merged["canonical_smiles_13C"]
     
-    return merged.drop(["SMILES_13C", "SMILES_1H", "solvent_match_priority"], axis=1)
+    return merged.drop(
+        [
+            "canonical_smiles_13C",
+            "canonical_smiles_1H",
+            "solvent_match_priority",
+        ],
+        axis=1,
+    )
 
 
 def build_spectra_dataset(df: pd.DataFrame) -> list[dict[str, Any]]:
@@ -138,4 +182,3 @@ if __name__ == "__main__":
     
     write_pickle(output_pickle, dataset)
     print(f"Wrote {output_pickle}; samples={len(dataset)}")
-

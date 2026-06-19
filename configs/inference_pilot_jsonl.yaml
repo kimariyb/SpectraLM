@@ -1,0 +1,28 @@
+# SpectraLM lazy-JSONL pilot inference configuration
+# Usage:
+# source /opt/miniconda3/etc/profile.d/conda.sh && conda activate ml
+# python -m src.training.inference configs/inference_pilot_jsonl.yaml
+
+# Model
+model_path: outputs/pilot-jsonl-qwen3-vl-4b/best_model
+max_seq_length: 4096
+load_in_4bit: true
+
+# Optional adapter path if using a separate LoRA adapter directory.
+adapter_path: null
+
+# Data
+dataset_dir: dataset/paired_jsonl_pilot_50k
+dataset_backend: lazy_jsonl
+split: test
+mode: image_table_rule
+max_samples: 32
+max_new_tokens: 128
+h_snr: 500.0
+c_snr: 300.0
+render_seed: 3407
+image_size: [448, 448]
+seed: 42
+
+# Output
+output: outputs/pilot-jsonl-predictions.jsonl

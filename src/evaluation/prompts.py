@@ -13,6 +13,13 @@ from typing import Any
 from src.data.molecules import molecule_formula
 
 
+NMR_RULE_HINTS: str = """NMR rules to consider:
+- 1H integration constrains the relative number of equivalent protons.
+- 1H multiplicity and J values suggest local proton-neighbor environments.
+- 13C peak count constrains the number of magnetically distinct carbons.
+- Chemical-shift regions suggest functional groups and hybridization states."""
+
+
 # Prompt templates — structure prediction
 STRUCTURE_PROMPTS: list[str] = [
     (
@@ -60,7 +67,13 @@ FUNCTIONAL_GROUP_PROMPTS: list[str] = [
 ]
 
 
-def build_structure_prompt(sample: dict[str, Any], prompt: str) -> str:
+def build_structure_prompt(
+    sample: dict[str, Any],
+    prompt: str,
+    *,
+    include_formula: bool = True,
+    include_rules: bool = False,
+) -> str:
     """Build a complete prompt with peak tables and molecular formula.
 
     Parameters
@@ -70,6 +83,11 @@ def build_structure_prompt(sample: dict[str, Any], prompt: str) -> str:
         ``canonical_smiles`` keys.
     prompt
         Template string with a ``{peak_tables}`` placeholder.
+    include_formula
+        Whether to include molecular formula in the prompt.  Disable this
+        for image-only or formula-free ablations.
+    include_rules
+        Whether to append explicit NMR interpretation hints.
 
     Returns
     -------
@@ -77,13 +95,50 @@ def build_structure_prompt(sample: dict[str, Any], prompt: str) -> str:
         Filled-in prompt text.
     """
     formula = molecule_formula(sample.get("canonical_smiles")) or "unknown"
-    return prompt.format(peak_tables=_format_peak_tables(sample, formula))
+    peak_tables = _format_peak_tables(
+        sample,
+        formula if include_formula else None,
+    )
+    if include_rules:
+        peak_tables = f"{peak_tables}\n\n{NMR_RULE_HINTS}"
+    return prompt.format(peak_tables=peak_tables)
+
+
+def build_reasoning_target(sample: dict[str, Any]) -> str:
+    """Build a structured reasoning target for supervised fine-tuning.
+
+    Parameters
+    ----------
+    sample
+        Sample dictionary containing NMR data and molecular structure labels.
+
+    Returns
+    -------
+    str
+        Target text ordered as reasoning, SELFIES, then canonical SMILES.
+    """
+    smiles = sample.get("canonical_smiles") or sample.get("smiles") or ""
+    selfies = sample.get("selfies") or sample.get("SELFIES") or ""
+    h_count = len(sample.get("1H_NMR", {}).get("peaks", []))
+    c_count = len(sample.get("13C_NMR", {}).get("peaks", []))
+    reasoning = (
+        "Spectral reasoning: The 1H NMR and 13C NMR spectra provide "
+        f"{h_count} proton peak records and {c_count} carbon peak records "
+        "that constrain the molecular structure."
+    )
+    return "\n".join(
+        [
+            reasoning,
+            f"Final SELFIES: {selfies}",
+            f"Final canonical SMILES: {smiles}",
+        ]
+    )
 
 # TODO: Prompt templates — structure reasoning prediction
 # 暂时不实现
 
 
-def _format_peak_tables(sample: dict[str, Any], formula: str) -> str:
+def _format_peak_tables(sample: dict[str, Any], formula: str | None) -> str:
     """Build a formatted text block of 1H and 13C peak tables with formula.
 
     Parameters
@@ -91,7 +146,7 @@ def _format_peak_tables(sample: dict[str, Any], formula: str) -> str:
     sample
         Sample dictionary.
     formula
-        Molecular formula string.
+        Molecular formula string. ``None`` omits the formula line.
 
     Returns
     -------
@@ -99,7 +154,8 @@ def _format_peak_tables(sample: dict[str, Any], formula: str) -> str:
         Multi-line peak-table text.
     """
     parts: list[str] = []
-    parts.append(f"Molecular formula: {formula}")
+    if formula is not None:
+        parts.append(f"Molecular formula: {formula}")
 
     # 1H table
     h_nmr = sample.get("1H_NMR", {})

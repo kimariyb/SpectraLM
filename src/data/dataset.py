@@ -33,11 +33,13 @@ from datasets import (
 )
 from PIL import Image as PILImage
 from PIL.Image import Resampling
+from torch.utils.data import Dataset
 
 from src.data.molecules import sample_smiles, sample_fg
 from src.evaluation.prompts import (
     FUNCTIONAL_GROUP_PROMPTS,
     STRUCTURE_PROMPTS,
+    build_reasoning_target,
     build_structure_prompt,
 )
 from src.io import load_pickle_list
@@ -105,20 +107,109 @@ def _split_by_scaffold(
     list[dict[str, Any]]
         Samples for the requested split.
     """
+    if split not in {"train", "test"}:
+        raise ValueError(f"split must be 'train' or 'test', got {split!r}")
+
+    if train_size <= 0:
+        return [] if split == "train" else list(samples)
+    if train_size >= 1:
+        return list(samples) if split == "train" else []
+
     max_train = int(len(samples) * train_size)
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for idx, sample in enumerate(samples):
+        scaffold = (
+            sample.get("murcko_scaffold")
+            or sample.get("canonical_smiles")
+            or sample.get("id")
+            or f"row:{idx}"
+        )
+        grouped.setdefault(str(scaffold), []).append(sample)
+
     train: list[dict[str, Any]] = []
     test: list[dict[str, Any]] = []
-    train_scaffolds: set[str] = set()
 
-    for sample in samples:
-        scaffold = sample.get("murcko_scaffold", "")
-        if scaffold not in train_scaffolds and len(train) < max_train:
-            train.append(sample)
-            train_scaffolds.add(scaffold)
+    for group in grouped.values():
+        if not train or len(train) + len(group) <= max_train:
+            train.extend(group)
         else:
-            test.append(sample)
+            test.extend(group)
 
     return train if split == "train" else test
+
+
+def _stable_render_seed(
+    base_seed: int | None,
+    sample_id: str,
+    nucleus: str,
+) -> int | None:
+    """Derive a stable per-sample render seed.
+
+    Parameters
+    ----------
+    base_seed
+        Base render seed. ``None`` keeps stochastic rendering.
+    sample_id
+        Sample identifier.
+    nucleus
+        Nucleus label such as ``"1h"`` or ``"13c"``.
+
+    Returns
+    -------
+    int | None
+        Deterministic NumPy-compatible seed, or ``None``.
+    """
+    if base_seed is None:
+        return None
+    payload = f"{base_seed}:{sample_id}:{nucleus}".encode("utf-8")
+    digest = hashlib.sha256(payload).digest()
+    return int.from_bytes(digest[:4], byteorder="big", signed=False)
+
+
+def _jsonl_sample_iter(path: Path):
+    """Yield sample dictionaries from a JSONL file."""
+    with path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            text = line.strip()
+            if text:
+                yield json.loads(text)
+
+
+def _split_ids_path(base: Path, split: str) -> Path:
+    """Return the id-list path for a requested split name."""
+    aliases = {"validation": "val"}
+    split_key = aliases.get(split, split)
+    return base / f"{split_key}_ids.txt"
+
+
+def _load_jsonl_samples(
+    base: Path,
+    split: str | None,
+) -> list[dict[str, Any]]:
+    """Load samples from ``samples.jsonl`` with optional split-id filtering."""
+    jsonl_path = base / "samples.jsonl"
+    if not jsonl_path.exists():
+        raise FileNotFoundError(f"JSONL dataset not found: {jsonl_path}")
+
+    if split is None:
+        return list(_jsonl_sample_iter(jsonl_path))
+
+    ids_path = _split_ids_path(base, split)
+    if not ids_path.exists():
+        raise FileNotFoundError(
+            f"Split id file not found for split={split!r}: {ids_path}"
+        )
+
+    split_ids = {
+        line.strip()
+        for line in ids_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    }
+    return [
+        sample
+        for sample in _jsonl_sample_iter(jsonl_path)
+        if str(sample.get("id", "")) in split_ids
+    ]
 
 
 def _resolve_and_load_samples(
@@ -130,21 +221,34 @@ def _resolve_and_load_samples(
 
     Priority when *split* is given:
 
-    1. ``<dataset_path>/<split>.pkl`` — pre-split, loaded directly.
-    2. ``<dataset_path>/selected.pkl`` — split by scaffold.
+    1. ``<dataset_path>/samples.jsonl`` + ``<split>_ids.txt``.
+    2. ``<dataset_path>/<split>.pkl`` — pre-split, loaded directly.
+    3. ``<dataset_path>/selected.pkl`` — split by scaffold.
 
-    When *split* is ``None``, *dataset_path* is treated as a file path.
+    When *split* is ``None``, file paths are treated as full datasets.
     """
     base = Path(dataset_path)
 
     if split is None:
         if not base.exists():
             raise FileNotFoundError(f"Dataset file not found: {base}")
+        if base.is_dir() and (base / "samples.jsonl").exists():
+            return _load_jsonl_samples(base, split=None)
+        if base.suffix == ".jsonl":
+            return list(_jsonl_sample_iter(base))
         return load_pickle_list(str(base))
+
+    if base.is_dir() and (base / "samples.jsonl").exists():
+        return _load_jsonl_samples(base, split=split)
 
     split_file = base / f"{split}.pkl"
     if split_file.exists():
         return load_pickle_list(str(split_file))
+
+    if split == "validation":
+        val_file = base / "val.pkl"
+        if val_file.exists():
+            return load_pickle_list(str(val_file))
 
     selected_file = base / "selected.pkl"
     if selected_file.exists():
@@ -199,6 +303,9 @@ class NMRDatasetConfig(BuilderConfig):
         13C signal-to-noise ratio.
     render_cache_version
         Version tag embedded in the cache manifest — bump to invalidate.
+    render_seed
+        Base seed for deterministic per-sample rendering. ``None`` keeps
+        stochastic rendering.
     image_size
         Optional ``(width, height)`` to resize rendered images.
     """
@@ -212,6 +319,7 @@ class NMRDatasetConfig(BuilderConfig):
         h_snr: float = 500.0,
         c_snr: float = 300.0,
         render_cache_version: str = "1",
+        render_seed: int | None = 3407,
         image_size: tuple[int, int] | list[int] | None = None,
         **kwargs: Any,
     ) -> None:
@@ -223,6 +331,7 @@ class NMRDatasetConfig(BuilderConfig):
         self.h_snr = float(h_snr)
         self.c_snr = float(c_snr)
         self.render_cache_version = str(render_cache_version)
+        self.render_seed = int(render_seed) if render_seed is not None else None
         self.image_size = (
             tuple(image_size) if image_size is not None else None
         )
@@ -280,11 +389,12 @@ class NMRDatasetBuilder(GeneratorBasedBuilder):
     ) -> list[datasets.SplitGenerator]:
         """Return split generators derived from the dataset directory.
 
-        Three source layouts are supported:
+        Four source layouts are supported:
 
         1. A single ``.pkl`` file → ``Split.TRAIN``.
-        2. Pre-split ``train.pkl`` / ``validation.pkl`` / ``test.pkl``.
-        3. ``selected.pkl`` → internal scaffold split into train / test.
+        2. ``samples.jsonl`` + split id files.
+        3. Pre-split ``train.pkl`` / ``validation.pkl`` / ``test.pkl``.
+        4. ``selected.pkl`` → internal scaffold split into train / test.
         """
         if self.config.dataset_path is None:
             raise ValueError("dataset_path must be provided.")
@@ -303,8 +413,34 @@ class NMRDatasetBuilder(GeneratorBasedBuilder):
         if not base.exists():
             raise FileNotFoundError(f"Dataset path does not exist: {base}")
 
+        # --- JSONL with id-list splits -----------------------------------
+        if (base / "samples.jsonl").exists():
+            generators: list[datasets.SplitGenerator] = []
+            for split_name, hf_split in [
+                ("train", datasets.Split.TRAIN),
+                ("validation", datasets.Split.VALIDATION),
+                ("test", datasets.Split.TEST),
+            ]:
+                if _split_ids_path(base, split_name).exists():
+                    generators.append(
+                        datasets.SplitGenerator(
+                            name=hf_split,
+                            gen_kwargs={"split_key": split_name},
+                        )
+                    )
+
+            if generators:
+                return generators
+
+            return [
+                datasets.SplitGenerator(
+                    name=datasets.Split.TRAIN,
+                    gen_kwargs={"split_key": None},
+                )
+            ]
+
         # --- pre-split files -------------------------------------------
-        generators: list[datasets.SplitGenerator] = []
+        generators = []
         for split_name, hf_split in [
             ("train", datasets.Split.TRAIN),
             ("validation", datasets.Split.VALIDATION),
@@ -412,9 +548,25 @@ class NMRDatasetBuilder(GeneratorBasedBuilder):
 
         # --- render ----------------------------------------------------
         if nucleus == "1h":
-            image = hydrogen_to_spectra(sample, snr=self.config.h_snr)
+            image = hydrogen_to_spectra(
+                sample,
+                snr=self.config.h_snr,
+                seed=_stable_render_seed(
+                    self.config.render_seed,
+                    sample_id,
+                    nucleus,
+                ),
+            )
         elif nucleus == "13c":
-            image = carbon_to_spectra(sample, snr=self.config.c_snr)
+            image = carbon_to_spectra(
+                sample,
+                snr=self.config.c_snr,
+                seed=_stable_render_seed(
+                    self.config.render_seed,
+                    sample_id,
+                    nucleus,
+                ),
+            )
         else:
             raise ValueError(f"Unsupported nucleus: {nucleus!r}")
 
@@ -455,6 +607,7 @@ class NMRDatasetBuilder(GeneratorBasedBuilder):
                 list(self.config.image_size)
                 if self.config.image_size else None
             ),
+            "render_seed": self.config.render_seed,
             "version": self.config.render_cache_version,
         }
 
@@ -495,9 +648,18 @@ class NMRMessageTransform:
         self,
         task_probs: dict[str, float] | None = None,
         seed: int | None = None,
+        target_format: str = "smiles",
+        include_formula: bool = True,
     ) -> None:
         self.tasks, self.weights = _normalise_task_probs(task_probs)
         self.rng = np.random.default_rng(seed)
+        if target_format not in {"smiles", "reasoning"}:
+            raise ValueError(
+                "target_format must be 'smiles' or 'reasoning', "
+                f"got {target_format!r}"
+            )
+        self.target_format = target_format
+        self.include_formula = bool(include_formula)
 
     def __call__(self, batch: dict[str, Any]) -> dict[str, list[Any]]:
         """Transform a batch of Arrow rows into chat messages.
@@ -529,8 +691,12 @@ class NMRMessageTransform:
                 prompt = build_structure_prompt(
                     sample,
                     prompt=str(self.rng.choice(STRUCTURE_PROMPTS)),
+                    include_formula=self.include_formula,
                 )
-                target = sample_smiles(sample) or ""
+                if self.target_format == "reasoning":
+                    target = build_reasoning_target(sample)
+                else:
+                    target = sample_smiles(sample) or ""
             elif task == "functional_group":
                 prompt = str(
                     self.rng.choice(FUNCTIONAL_GROUP_PROMPTS)
@@ -570,6 +736,182 @@ class NMRMessageTransform:
         return pickle.loads(blob)
 
 
+def _resize_image(
+    image: PILImage.Image,
+    image_size: tuple[int, int] | list[int] | None,
+) -> PILImage.Image:
+    """Resize an RGB PIL image when a target size is configured."""
+    image = image.convert("RGB")
+    if image_size is None:
+        return image
+    return image.resize(tuple(image_size), Resampling.LANCZOS)
+
+
+def render_sample_images(
+    sample: dict[str, Any],
+    *,
+    h_snr: float = 500.0,
+    c_snr: float = 300.0,
+    render_seed: int | None = 3407,
+    image_size: tuple[int, int] | list[int] | None = None,
+) -> tuple[PILImage.Image, PILImage.Image]:
+    """Render 1H and 13C spectrum images for one sample."""
+    sample_id = str(sample.get("id", "unknown"))
+    h_image = hydrogen_to_spectra(
+        sample,
+        snr=h_snr,
+        seed=_stable_render_seed(render_seed, sample_id, "1h"),
+    )
+    c_image = carbon_to_spectra(
+        sample,
+        snr=c_snr,
+        seed=_stable_render_seed(render_seed, sample_id, "13c"),
+    )
+    return (
+        _resize_image(h_image, image_size),
+        _resize_image(c_image, image_size),
+    )
+
+
+class LazyNMRJsonlDataset(Dataset):
+    """Lazy JSONL-backed NMR instruction dataset.
+
+    This path is intended for million-scale experiments.  It keeps only line
+    offsets in memory, reads one sample at a time, renders spectra on demand,
+    and returns the same ``{"messages": ...}`` shape expected by the VLM SFT
+    collator.
+    """
+
+    def __init__(
+        self,
+        dataset_dir: str | Path,
+        *,
+        split: str = "train",
+        task_probs: dict[str, float] | None = None,
+        target_format: str = "smiles",
+        include_formula: bool = True,
+        seed: int | None = 3407,
+        h_snr: float = 500.0,
+        c_snr: float = 300.0,
+        render_seed: int | None = 3407,
+        image_size: tuple[int, int] | list[int] | None = None,
+    ) -> None:
+        self.dataset_dir = Path(dataset_dir)
+        self.jsonl_path = self.dataset_dir / "samples.jsonl"
+        if not self.jsonl_path.exists():
+            raise FileNotFoundError(f"JSONL dataset not found: {self.jsonl_path}")
+
+        self.split = split
+        self.h_snr = float(h_snr)
+        self.c_snr = float(c_snr)
+        self.render_seed = render_seed
+        self.image_size = tuple(image_size) if image_size is not None else None
+        self.transform = NMRMessageTransform(
+            task_probs=task_probs,
+            seed=seed,
+            target_format=target_format,
+            include_formula=include_formula,
+        )
+        self.offsets = self._index_offsets()
+
+    def _index_offsets(self) -> list[int]:
+        """Build line offsets for the configured split."""
+        split_ids_path = _split_ids_path(self.dataset_dir, self.split)
+        split_ids = None
+        if split_ids_path.exists():
+            split_ids = {
+                line.strip()
+                for line in split_ids_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            }
+
+        offsets: list[int] = []
+        with self.jsonl_path.open("rb") as handle:
+            while True:
+                offset = handle.tell()
+                line = handle.readline()
+                if not line:
+                    break
+                if split_ids is None:
+                    offsets.append(offset)
+                    continue
+                sample = json.loads(line)
+                if str(sample.get("id", "")) in split_ids:
+                    offsets.append(offset)
+        return offsets
+
+    def __len__(self) -> int:
+        """Return number of samples in the selected split."""
+        return len(self.offsets)
+
+    def _load_sample_at(self, offset: int) -> dict[str, Any]:
+        """Load one JSONL sample by byte offset."""
+        with self.jsonl_path.open("rb") as handle:
+            handle.seek(offset)
+            return json.loads(handle.readline())
+
+    def _render_images(self, sample: dict[str, Any]) -> tuple[PILImage.Image, PILImage.Image]:
+        """Render 1H and 13C images for one sample."""
+        return render_sample_images(
+            sample,
+            h_snr=self.h_snr,
+            c_snr=self.c_snr,
+            render_seed=self.render_seed,
+            image_size=self.image_size,
+        )
+
+    def __getitem__(self, idx: int) -> dict[str, Any]:
+        """Return one multimodal instruction sample."""
+        sample = self._load_sample_at(self.offsets[idx])
+        h_image, c_image = self._render_images(sample)
+        transformed = self.transform(
+            {
+                "h_image": [h_image],
+                "c_image": [c_image],
+                "sample_pickle": [pickle.dumps(sample)],
+            }
+        )
+        return {"messages": transformed["messages"][0]}
+
+
+def load_lazy_nmr_dataset(
+    dataset_dir: str | Path,
+    *,
+    split: str = "train",
+    task_probs: dict[str, float] | None = None,
+    target_format: str = "smiles",
+    include_formula: bool = True,
+    seed: int | None = 3407,
+    h_snr: float = 500.0,
+    c_snr: float = 300.0,
+    render_seed: int | None = 3407,
+    image_size: tuple[int, int] | list[int] | None = None,
+) -> LazyNMRJsonlDataset:
+    """Load a lazy JSONL-backed NMR instruction dataset."""
+    return LazyNMRJsonlDataset(
+        dataset_dir,
+        split=split,
+        task_probs=task_probs,
+        target_format=target_format,
+        include_formula=include_formula,
+        seed=seed,
+        h_snr=h_snr,
+        c_snr=c_snr,
+        render_seed=render_seed,
+        image_size=image_size,
+    )
+
+
+def load_raw_nmr_samples(
+    dataset_path: str | Path,
+    *,
+    split: str | None = None,
+    train_size: float = 0.8,
+) -> list[dict[str, Any]]:
+    """Load raw normalized NMR sample dictionaries without rendering images."""
+    return _resolve_and_load_samples(dataset_path, split=split, train_size=train_size)
+
+
 def load_nmr_dataset(
     dataset_path: str | Path,
     *,
@@ -580,9 +922,12 @@ def load_nmr_dataset(
     h_snr: float = 500.0,
     c_snr: float = 300.0,
     render_cache_version: str = "1",
+    render_seed: int | None = 3407,
     image_size: tuple[int, int] | None = None,
     with_messages: bool = True,
     task_probs: dict[str, float] | None = None,
+    target_format: str = "smiles",
+    include_formula: bool = True,
     seed: int | None = None,
 ):
     """Load the NMR dataset as a :class:`~datasets.Dataset` or dict of splits.
@@ -604,6 +949,9 @@ def load_nmr_dataset(
         SNR values for 1H / 13C rendering (used with *render_cache_dir*).
     render_cache_version
         Cache-manifest version tag.
+    render_seed
+        Base seed for deterministic per-sample spectrum rendering. Set to
+        ``None`` to keep stochastic rendering.
     image_size
         Optional ``(width, height)`` resize target.
     with_messages
@@ -612,6 +960,12 @@ def load_nmr_dataset(
         the raw Arrow columns.
     task_probs
         Task sampling probabilities.
+    target_format
+        Structure-task target format. ``"smiles"`` trains direct canonical
+        SMILES output; ``"reasoning"`` trains a compact reasoning + SELFIES
+        + canonical SMILES target.
+    include_formula
+        Whether to include the molecular formula in structure prompts.
     seed
         RNG seed for task sampling.
 
@@ -628,6 +982,7 @@ def load_nmr_dataset(
         h_snr=h_snr,
         c_snr=c_snr,
         render_cache_version=render_cache_version,
+        render_seed=render_seed,
         image_size=image_size,
     )
 
@@ -637,7 +992,12 @@ def load_nmr_dataset(
     if not with_messages:
         return ds
 
-    transform = NMRMessageTransform(task_probs=task_probs, seed=seed)
+    transform = NMRMessageTransform(
+        task_probs=task_probs,
+        seed=seed,
+        target_format=target_format,
+        include_formula=include_formula,
+    )
     return ds.with_transform(
         transform,
         columns=["h_image", "c_image", "sample_pickle"],

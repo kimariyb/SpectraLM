@@ -35,7 +35,11 @@ import torch
 from tqdm import tqdm
 
 from src.config import load_config
-from src.data.dataset import load_nmr_dataset
+from src.data.dataset import (
+    load_nmr_dataset,
+    load_raw_nmr_samples,
+    render_sample_images,
+)
 from src.evaluation.prompts import STRUCTURE_PROMPTS, build_structure_prompt
 from unsloth import FastVisionModel
 from peft import PeftModel
@@ -117,10 +121,41 @@ def extract_sample_from_row(row: dict[str, Any]) -> tuple[list[Any], dict[str, A
     return images, sample
 
 
+def build_inference_rows(
+    config: dict[str, Any],
+    *,
+    seed: int,
+) -> list[dict[str, Any]] | Any:
+    """Load inference rows without pre-rendering full JSONL datasets."""
+    dataset_backend = config.get("dataset_backend", "hf")
+    if dataset_backend == "lazy_jsonl":
+        return load_raw_nmr_samples(
+            config["dataset_dir"],
+            split=config.get("split", "test"),
+            train_size=float(config.get("train_size", 0.8)),
+        )
+
+    return load_nmr_dataset(
+        config["dataset_dir"],
+        split=config.get("split", "test"),
+        train_size=float(config.get("train_size", 0.8)),
+        render_cache_dir=config.get("render_cache_dir", config.get("train_cache_dir")),
+        render_cache_version=config.get("cache_version", "1"),
+        seed=seed,
+        with_messages=False,
+    )
+
+
 # Minimal prompt used when peak tables are not provided (image_only mode).
 IMAGE_ONLY_PROMPT: str = (
     "Determine the molecular structure from the 1H and 13C NMR spectra "
     "below.\nOutput the canonical SMILES of the molecule."
+)
+
+TABLE_ONLY_PROMPT: str = (
+    "Determine the molecular structure from the NMR peak tables below.\n\n"
+    "{peak_tables}\n\n"
+    "Output the canonical SMILES of the molecule."
 )
 
 
@@ -278,15 +313,7 @@ def main(config: dict[str, Any]) -> None:
     )
 
     # ---- 2. Load dataset (raw columns, no messages transform) ------------
-    test_ds = load_nmr_dataset(
-        config["dataset_dir"],
-        split="test",
-        train_size=float(config.get("train_size", 0.8)),
-        render_cache_dir=config.get("render_cache_dir", config.get("train_cache_dir")),
-        render_cache_version=config.get("cache_version", "1"),
-        seed=seed,
-        with_messages=False,
-    )
+    test_ds = build_inference_rows(config, seed=seed)
 
     # ---- 3. Select prompt template ---------------------------------------
     rng = random.Random(seed)
@@ -295,6 +322,8 @@ def main(config: dict[str, Any]) -> None:
     # ---- 4. Ablation-mode flags ------------------------------------------
     include_images: bool = mode != "table_only"
     include_tables: bool = mode != "image_only"
+    include_rules: bool = mode == "image_table_rule"
+    include_formula: bool = mode != "image_only"
 
     print(f"Mode: {mode}  |  images={include_images}  |  tables={include_tables}")
     print(f"Prompt template: {prompt_template[:80]}...")
@@ -314,12 +343,30 @@ def main(config: dict[str, Any]) -> None:
     with output_path.open("w", encoding="utf-8") as f:
         for idx, row in tqdm(iterator, desc="Infer", total=max_samples):
             # --- extract data from raw row ---
-            images, sample = extract_sample_from_row(row)
+            if config.get("dataset_backend", "hf") == "lazy_jsonl":
+                sample = row
+                images = list(
+                    render_sample_images(
+                        sample,
+                        h_snr=float(config.get("h_snr", 500.0)),
+                        c_snr=float(config.get("c_snr", 300.0)),
+                        render_seed=config.get("render_seed", seed),
+                        image_size=config.get("image_size"),
+                    )
+                )
+            else:
+                images, sample = extract_sample_from_row(row)
             label = str(sample.get("canonical_smiles", "") or "").strip()
 
             # --- build prompt ---
             if include_tables:
-                prompt = build_structure_prompt(sample, prompt_template)
+                template = TABLE_ONLY_PROMPT if mode == "table_only" else prompt_template
+                prompt = build_structure_prompt(
+                    sample,
+                    template,
+                    include_formula=include_formula,
+                    include_rules=include_rules,
+                )
             else:
                 prompt = IMAGE_ONLY_PROMPT
 

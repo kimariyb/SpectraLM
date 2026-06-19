@@ -1,0 +1,43 @@
+# SpectraLM CUDA QLoRA training configuration for one 48GB GPU.
+# This config intentionally uses one visible GPU. For Unsloth, do not launch
+# with torchrun/DDP unless you replace the backend with a multi-GPU trainer.
+
+# Model
+model_path: /mnt/data/kimariyb/models/Qwen3-VL-8B-Instruct
+max_seq_length: 4096
+load_in_4bit: true
+use_gradient_checkpointing: unsloth
+
+# Dataset
+dataset_dir: dataset/paired_jsonl_full
+dataset_backend: lazy_jsonl
+eval_split_name: validation
+target_format: smiles
+include_formula: true
+h_snr: 500.0
+c_snr: 300.0
+render_seed: 3407
+image_size: [448, 448]
+max_eval_samples: 5000
+
+# Training
+dry_run: false
+output_dir: outputs/cuda-full-qwen3-vl-8b-formula
+per_device_train_batch_size: 1
+gradient_accumulation_steps: 16
+lora_r: 16
+lora_alpha: 32
+lora_dropout: 0.0
+num_train_epochs: 1
+learning_rate: 2.0e-4
+weight_decay: 0.01
+warmup_steps: 100
+lr_scheduler_type: cosine_with_restarts
+optim: adamw_8bit
+bf16: true
+fp16: false
+logging_steps: 10
+eval_steps: 1000
+save_steps: 1000
+save_total_limit: 3
+seed: 3407
