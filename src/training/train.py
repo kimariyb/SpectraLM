@@ -2,7 +2,7 @@
 
 Usage::
 
-    python -m src.training.train configs/train.yaml
+    python -m src.training.train configs/train_cuda_48g_jsonl.yaml
 """
 
 from __future__ import annotations
@@ -16,7 +16,8 @@ from unsloth import FastVisionModel
 from unsloth.trainer import UnslothVisionDataCollator
 from src.config import TrainingLoggerCallback, load_config
 from src.logger import TrainingLogger
-from src.data.dataset import load_lazy_nmr_dataset, load_nmr_dataset
+from src.data.dataset import load_lazy_nmr_dataset
+from src.training.arguments import build_sft_kwargs
 from trl import SFTConfig, SFTTrainer
 
 
@@ -25,8 +26,6 @@ def _limit_dataset(dataset, max_samples: int | None):
     if max_samples is None:
         return dataset
     n = min(int(max_samples), len(dataset))
-    if hasattr(dataset, "select"):
-        return dataset.select(range(n))
     return Subset(dataset, range(n))
 
 
@@ -36,66 +35,37 @@ def main(config: dict[str, Any]) -> None:
     Parameters
     ----------
     config
-        Configuration with keys for model, dataset, LoRA, and training
-        hyperparameters.  See ``configs/train.yaml`` for the full schema.
+        Model, dataset, LoRA, and optimization settings for the active
+        lazy-JSONL CUDA training path.
     """
     seed: int = config.get("seed", 3407)
 
     # 1. Build datasets first so dry-run works without loading a VLM.
     dataset_dir: str = config["dataset_dir"]
-    train_size: float = float(config.get("train_size", 0.8))
-    eval_split: float = float(config.get("eval_split", 0.1))
     train_split_name: str = config.get("train_split_name", "train")
     eval_split_name: str = config.get("eval_split_name", "validation")
 
-    dataset_backend = config.get("dataset_backend", "hf")
-    if dataset_backend == "lazy_jsonl":
-        train_ds = load_lazy_nmr_dataset(
-            dataset_dir,
-            split=train_split_name,
-            target_format=config.get("target_format", "smiles"),
-            include_formula=config.get("include_formula", True),
-            seed=seed,
-            h_snr=float(config.get("h_snr", 500.0)),
-            c_snr=float(config.get("c_snr", 300.0)),
-            render_seed=config.get("render_seed", seed),
-            image_size=config.get("image_size"),
-            image_backend=config.get("image_backend", "lazy_render"),
-            rendered_image_dir=config.get("rendered_image_dir"),
-            missing_image_policy=config.get("missing_image_policy", "error"),
-        )
-        eval_ds = load_lazy_nmr_dataset(
-            dataset_dir,
-            split=eval_split_name,
-            target_format=config.get("target_format", "smiles"),
-            include_formula=config.get("include_formula", True),
-            seed=seed,
-            h_snr=float(config.get("h_snr", 500.0)),
-            c_snr=float(config.get("c_snr", 300.0)),
-            render_seed=config.get("render_seed", seed),
-            image_size=config.get("image_size"),
-            image_backend=config.get("image_backend", "lazy_render"),
-            rendered_image_dir=config.get("rendered_image_dir"),
-            missing_image_policy=config.get("missing_image_policy", "error"),
-        )
-    else:
-        full_ds = load_nmr_dataset(
-            dataset_dir,
-            split=train_split_name,
-            train_size=train_size,
-            render_cache_dir=config.get("train_cache_dir"),
-            render_cache_version=config.get("cache_version", "1"),
-            target_format=config.get("target_format", "smiles"),
-            include_formula=config.get("include_formula", True),
-            seed=seed,
-        )
-
-        # Split a fraction for periodic evaluation
-        split_ds = full_ds.train_test_split(
-            test_size=eval_split, seed=seed
-        )
-        train_ds = split_ds["train"].shuffle(seed=seed)
-        eval_ds = split_ds["test"]
+    dataset_kwargs = {
+        "include_formula": config.get("include_formula", True),
+        "seed": seed,
+        "h_snr": float(config.get("h_snr", 500.0)),
+        "c_snr": float(config.get("c_snr", 300.0)),
+        "render_seed": config.get("render_seed", seed),
+        "image_size": config.get("image_size"),
+        "image_backend": config.get("image_backend", "lazy_render"),
+        "rendered_image_dir": config.get("rendered_image_dir"),
+        "missing_image_policy": config.get("missing_image_policy", "error"),
+    }
+    train_ds = load_lazy_nmr_dataset(
+        dataset_dir,
+        split=train_split_name,
+        **dataset_kwargs,
+    )
+    eval_ds = load_lazy_nmr_dataset(
+        dataset_dir,
+        split=eval_split_name,
+        **dataset_kwargs,
+    )
 
     train_ds = _limit_dataset(train_ds, config.get("max_train_samples"))
     eval_ds = _limit_dataset(eval_ds, config.get("max_eval_samples"))
@@ -137,46 +107,7 @@ def main(config: dict[str, Any]) -> None:
     # 4. Train
     FastVisionModel.for_training(model)
 
-    sft_kwargs: dict[str, Any] = {
-        "per_device_train_batch_size": config.get("per_device_train_batch_size", 4),
-        "gradient_accumulation_steps": config.get("gradient_accumulation_steps", 4),
-        "warmup_steps": config.get("warmup_steps", 5),
-        "num_train_epochs": float(config["num_train_epochs"]),
-        "learning_rate": float(config.get("learning_rate", 2e-4)),
-        
-        "logging_strategy": "steps",
-        "logging_steps": config.get("logging_steps", 1),
-        "logging_first_step": True,
-        
-        "eval_strategy": "steps",
-        "eval_steps": config.get("eval_steps", 50),
-        
-        "save_strategy": "steps",
-        "save_steps": config.get("save_steps", 50),
-        "save_total_limit": int(config.get("save_total_limit", 5)),
-        
-        "metric_for_best_model": "eval_loss", 
-        "greater_is_better": False,          
-        "load_best_model_at_end": True,       
-
-        "optim": config.get("optim", "adamw_8bit"),
-        "weight_decay": float(config.get("weight_decay", 0.001)),
-        "lr_scheduler_type": config.get("lr_scheduler_type", "cosine_with_restarts"),
-        "seed": seed,
-        "output_dir": config.get("output_dir", "outputs"),
-        "report_to": config.get("report_to", "none"),
-        
-        # Vision fine-tuning requirements
-        "remove_unused_columns": False,
-        "dataset_text_field": "",
-        "dataset_kwargs": {"skip_prepare_dataset": True},
-        "max_length": config.get("max_seq_length", 8192),
-        "bf16": bool(config.get("bf16", True)),
-        "fp16": bool(config.get("fp16", False)),
-    }
-
-    if config.get("max_steps") is not None:
-        sft_kwargs["max_steps"] = int(config["max_steps"])
+    sft_kwargs = build_sft_kwargs(config)
 
     training_logger = TrainingLogger(
         output_dir="outputs/logs",
@@ -186,10 +117,13 @@ def main(config: dict[str, Any]) -> None:
             "num_train_epochs": sft_kwargs['num_train_epochs'],
             "per_device_train_batch_size": sft_kwargs["per_device_train_batch_size"],
             "gradient_accumulation_steps": sft_kwargs['gradient_accumulation_steps'],
+            "per_device_eval_batch_size": sft_kwargs["per_device_eval_batch_size"],
+            "dataloader_num_workers": sft_kwargs["dataloader_num_workers"],
+            "dataloader_prefetch_factor": sft_kwargs.get(
+                "dataloader_prefetch_factor"
+            ),
             "eval_steps": sft_kwargs['eval_steps'],
-            "target_format": config.get("target_format", "smiles"),
             "include_formula": config.get("include_formula", True),
-            "dataset_backend": dataset_backend,
             "image_backend": config.get("image_backend", "lazy_render"),
             "rendered_image_dir": config.get("rendered_image_dir"),
             "train_split_name": train_split_name,

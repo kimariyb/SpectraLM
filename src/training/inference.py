@@ -1,30 +1,21 @@
 """Prediction entrypoint for SpectraLM fine-tuned models.
 
-Loads the test split via :func:`~src.data.dataset.load_nmr_dataset`, builds
+Loads a curated JSONL test split, builds
 structure-elucidation prompts using the pre-rendered spectrum images, and
 generates SMILES predictions.
 
-Supports four ablation modes that progressively remove input information:
-
-``image_table_rule``
-    Full input: spectra images + peak tables + NMR interpretation rules.
-``image_table``
-    Images + peak table.
-``table_only``
-    Peak tables only, no images.
-``image_only``
-    Images only, no peak tables or rules.
+Formula-conditioned and formula-free runs use identical images and peak tables;
+only the molecular-formula line changes.
 
 Usage::
 
-    python -m src.training.inference configs/inference.yaml
+    python -m src.training.inference configs/experiments/infer_zero_shot_50k.yaml
 """
 
 from __future__ import annotations
 
 import itertools
 import json
-import pickle
 import random
 import sys
 import traceback
@@ -36,13 +27,14 @@ from tqdm import tqdm
 
 from src.config import load_config
 from src.data.dataset import (
-    load_nmr_dataset,
+    load_sample_images,
     load_raw_nmr_samples,
-    render_sample_images,
+)
+from src.evaluation.metrics import (
+    evaluate_structure_prediction,
+    summarize_structure_predictions,
 )
 from src.evaluation.prompts import STRUCTURE_PROMPTS, build_structure_prompt
-from unsloth import FastVisionModel
-from peft import PeftModel
 
 
 def load_model_for_inference(
@@ -70,6 +62,9 @@ def load_model_for_inference(
     tuple
         ``(model, tokenizer)`` ready for inference.
     """
+    from peft import PeftModel
+    from unsloth import FastVisionModel
+
     model, tokenizer = FastVisionModel.from_pretrained(
         base_model_path,
         max_seq_length=max_seq_length,
@@ -90,106 +85,14 @@ def load_model_for_inference(
     return model, tokenizer
 
 
-def extract_sample_from_row(row: dict[str, Any]) -> tuple[list[Any], dict[str, Any]]:
-    """Extract images and deserialised sample dict from a raw dataset row.
-
-    Parameters
-    ----------
-    row
-        Raw Arrow row with ``"h_image"``, ``"c_image"``, and
-        ``"sample_pickle"`` columns.
-
-    Returns
-    -------
-    tuple[list[Any], dict[str, Any]]
-        ``(images, sample)`` — *images* is a list of 0–2 PIL images;
-        *sample* is the deserialised sample dictionary.
-    """
-    h_image = row.get("h_image")
-    c_image = row.get("c_image")
-    images = [img for img in (h_image, c_image) if img is not None]
-
-    blob = row.get("sample_pickle")
-    sample: dict[str, Any]
-    if blob is not None:
-        if isinstance(blob, memoryview):
-            blob = blob.tobytes()
-        sample = pickle.loads(blob)
-    else:
-        sample = {}
-
-    return images, sample
-
-
 def build_inference_rows(
     config: dict[str, Any],
-    *,
-    seed: int,
-) -> list[dict[str, Any]] | Any:
-    """Load inference rows without pre-rendering full JSONL datasets."""
-    dataset_backend = config.get("dataset_backend", "hf")
-    if dataset_backend == "lazy_jsonl":
-        return load_raw_nmr_samples(
-            config["dataset_dir"],
-            split=config.get("split", "test"),
-            train_size=float(config.get("train_size", 0.8)),
-        )
-
-    return load_nmr_dataset(
+) -> list[dict[str, Any]]:
+    """Load a bounded curated JSONL split for inference."""
+    return load_raw_nmr_samples(
         config["dataset_dir"],
         split=config.get("split", "test"),
-        train_size=float(config.get("train_size", 0.8)),
-        render_cache_dir=config.get("render_cache_dir", config.get("train_cache_dir")),
-        render_cache_version=config.get("cache_version", "1"),
-        seed=seed,
-        with_messages=False,
     )
-
-
-# Minimal prompt used when peak tables are not provided (image_only mode).
-IMAGE_ONLY_PROMPT: str = (
-    "Determine the molecular structure from the 1H and 13C NMR spectra "
-    "below.\nOutput the canonical SMILES of the molecule."
-)
-
-TABLE_ONLY_PROMPT: str = (
-    "Determine the molecular structure from the NMR peak tables below.\n\n"
-    "{peak_tables}\n\n"
-    "Output the canonical SMILES of the molecule."
-)
-
-
-def extract_label(example: dict[str, Any]) -> str | None:
-    """Extract ground-truth answer from your dataset.
-
-    Modify this if your dataset stores labels using another field.
-    """
-
-    if "answer" in example:
-        return str(example["answer"])
-
-    if "target" in example:
-        return str(example["target"])
-
-    if "label" in example:
-        return str(example["label"])
-
-    if "messages" in example:
-        for msg in example["messages"]:
-            if msg.get("role") == "assistant":
-                content = msg.get("content", "")
-                if isinstance(content, str):
-                    return content
-                if isinstance(content, list):
-                    texts = [
-                        x.get("text", "")
-                        for x in content
-                        if isinstance(x, dict) and x.get("type") == "text"
-                    ]
-                    return "\n".join(texts)
-
-    return None
-
 
 @torch.inference_mode()
 def generate_one(
@@ -201,7 +104,7 @@ def generate_one(
     temperature: float = 0.0,
     top_p: float = 1.0,
 ) -> str:
-    """Generate one prediction from zero or two NMR spectrum images.
+    """Generate one prediction from paired NMR spectrum images.
 
     Parameters
     ----------
@@ -210,7 +113,7 @@ def generate_one(
     tokenizer
         Corresponding tokenizer.
     images
-        List of 0 or 2 PIL/ndarray images.
+        Two PIL/ndarray images.
     prompt
         Text prompt.
     max_new_tokens
@@ -225,10 +128,8 @@ def generate_one(
     str
         Decoded prediction string.
     """
-    if len(images) not in (0, 2):
-        raise ValueError(
-            f"Expected 0 or 2 images, but got {len(images)}."
-        )
+    if len(images) != 2:
+        raise ValueError(f"Expected 2 images, but got {len(images)}.")
 
     # Build user-message content dynamically
     content: list[dict[str, Any]] = []
@@ -243,19 +144,12 @@ def generate_one(
         add_generation_prompt=True,
     )
 
-    if images:
-        inputs = tokenizer(
-            images,
-            input_text,
-            add_special_tokens=False,
-            return_tensors="pt",
-        ).to("cuda")
-    else:
-        inputs = tokenizer(
-            input_text,
-            add_special_tokens=False,
-            return_tensors="pt",
-        ).to("cuda")
+    inputs = tokenizer(
+        images,
+        input_text,
+        add_special_tokens=False,
+        return_tensors="pt",
+    ).to("cuda")
 
     do_sample = temperature > 0
 
@@ -280,29 +174,17 @@ def generate_one(
     return pred.strip()
 
 
-def normalize_text(x: str | None) -> str:
-    if x is None:
-        return ""
-    return " ".join(str(x).strip().split())
-
-
 def main(config: dict[str, Any]) -> None:
     """Run inference over the test split.
 
     Parameters
     ----------
     config
-        Configuration dictionary.  See ``configs/inference.yaml`` for keys.
+        Configuration dictionary for one experiment inference run.
     """
-    mode: str = config.get("mode", "image_table_rule")
     max_samples: int | None = config.get("max_samples", None)
     seed: int = int(config.get("seed", 3407))
-
-    if mode not in ("image_table_rule", "image_table", "table_only", "image_only"):
-        raise ValueError(
-            f"Unknown mode {mode!r}.  Expected one of: "
-            "image_table_rule, image_table, table_only, image_only."
-        )
+    include_formula = bool(config.get("include_formula", True))
 
     # ---- 1. Load model ---------------------------------------------------
     model, tokenizer = load_model_for_inference(
@@ -313,28 +195,21 @@ def main(config: dict[str, Any]) -> None:
     )
 
     # ---- 2. Load dataset (raw columns, no messages transform) ------------
-    test_ds = build_inference_rows(config, seed=seed)
+    test_ds = build_inference_rows(config)
 
     # ---- 3. Select prompt template ---------------------------------------
     rng = random.Random(seed)
     prompt_template: str = rng.choice(STRUCTURE_PROMPTS)
 
-    # ---- 4. Ablation-mode flags ------------------------------------------
-    include_images: bool = mode != "table_only"
-    include_tables: bool = mode != "image_only"
-    include_rules: bool = mode == "image_table_rule"
-    include_formula: bool = mode != "image_only"
-
-    print(f"Mode: {mode}  |  images={include_images}  |  tables={include_tables}")
+    print(f"Formula included: {include_formula}")
     print(f"Prompt template: {prompt_template[:80]}...")
 
-    # ---- 5. Inference loop -----------------------------------------------
+    # ---- 4. Inference loop -----------------------------------------------
     output_path = Path(config["output"])
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    n_total = 0
-    n_exact = 0
     n_errors = 0
+    metric_rows: list[dict[str, Any]] = []
 
     iterator = enumerate(test_ds)
     if max_samples is not None:
@@ -343,42 +218,36 @@ def main(config: dict[str, Any]) -> None:
     with output_path.open("w", encoding="utf-8") as f:
         for idx, row in tqdm(iterator, desc="Infer", total=max_samples):
             # --- extract data from raw row ---
-            if config.get("dataset_backend", "hf") == "lazy_jsonl":
-                sample = row
-                images = list(
-                    render_sample_images(
-                        sample,
-                        h_snr=float(config.get("h_snr", 500.0)),
-                        c_snr=float(config.get("c_snr", 300.0)),
-                        render_seed=config.get("render_seed", seed),
-                        image_size=config.get("image_size"),
-                    )
+            sample = row
+            images = list(
+                load_sample_images(
+                    sample,
+                    image_backend=config.get("image_backend", "lazy_render"),
+                    rendered_image_dir=config.get("rendered_image_dir"),
+                    missing_image_policy=config.get(
+                        "missing_image_policy", "error"
+                    ),
+                    h_snr=float(config.get("h_snr", 500.0)),
+                    c_snr=float(config.get("c_snr", 300.0)),
+                    render_seed=config.get("render_seed", seed),
+                    image_size=config.get("image_size"),
                 )
-            else:
-                images, sample = extract_sample_from_row(row)
+            )
             label = str(sample.get("canonical_smiles", "") or "").strip()
 
             # --- build prompt ---
-            if include_tables:
-                template = TABLE_ONLY_PROMPT if mode == "table_only" else prompt_template
-                prompt = build_structure_prompt(
-                    sample,
-                    template,
-                    include_formula=include_formula,
-                    include_rules=include_rules,
-                )
-            else:
-                prompt = IMAGE_ONLY_PROMPT
-
-            # --- select images ---
-            selected_images = images if include_images else []
+            prompt = build_structure_prompt(
+                sample,
+                prompt_template,
+                include_formula=include_formula,
+            )
 
             # --- generate ---
             try:
                 pred = generate_one(
                     model=model,
                     tokenizer=tokenizer,
-                    images=selected_images,
+                    images=images,
                     prompt=prompt,
                     max_new_tokens=config.get("max_new_tokens", 256),
                     temperature=config.get("temperature", 0.0),
@@ -390,33 +259,38 @@ def main(config: dict[str, Any]) -> None:
                 traceback.print_exc()
 
             # --- scoring ---
-            pred_norm = normalize_text(pred)
-            label_norm = normalize_text(label)
-
-            exact_match = pred_norm == label_norm if label else None
-
-            if exact_match is not None:
-                n_total += 1
-                n_exact += int(exact_match)
+            structure_metrics = evaluate_structure_prediction(pred, label)
+            metric_rows.append(structure_metrics)
 
             record: dict[str, Any] = {
                 "idx": idx,
-                "mode": mode,
+                "id": sample.get("id"),
+                "include_formula": include_formula,
                 "prompt": prompt,
                 "prediction": pred,
                 "label": label,
-                "exact_match": exact_match,
+                **structure_metrics,
             }
 
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
     # ---- 6. Report -------------------------------------------------------
-    print(f"Mode: {mode}")
     print(f"Saved predictions to: {output_path}")
-    if n_errors:
-        print(f"Errors: {n_errors}")
-    if n_total > 0:
-        print(f"Exact match: {n_exact}/{n_total} = {n_exact / n_total:.4f}")
+    summary = summarize_structure_predictions(metric_rows)
+    summary["generation_errors"] = n_errors
+    summary_path = Path(
+        config.get(
+            "summary_output",
+            output_path.with_suffix(".summary.json"),
+        )
+    )
+    summary_path.parent.mkdir(parents=True, exist_ok=True)
+    summary_path.write_text(
+        json.dumps(summary, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
+    print(f"Saved summary to: {summary_path}")
 
 
 if __name__ == "__main__":

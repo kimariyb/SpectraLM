@@ -1,1 +1,1 @@
-"""SpectraLM package for multimodal NMR reasoning research workflows."""
+"""SpectraLM package for multimodal NMR-to-structure research."""

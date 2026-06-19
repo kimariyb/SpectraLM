@@ -1,1 +1,1 @@
-"""Evaluation metrics for molecular structure and spectral reasoning outputs."""
+"""Evaluation metrics for direct molecular-structure prediction."""

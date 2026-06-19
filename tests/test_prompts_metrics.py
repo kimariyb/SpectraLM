@@ -1,26 +1,8 @@
 """Tests for prompt generation and structure metrics."""
 
-from src.evaluation.metrics import evaluate_predictions, tanimoto_similarity
-from src.evaluation.prompts import build_reasoning_target, build_structure_prompt
-
-
-def test_reasoning_target_outputs_reasoning_before_structures(ethanol_sample) -> None:
-    """Training target should put reasoning before SELFIES and SMILES."""
-    target = build_reasoning_target(ethanol_sample)
-    assert target.index("Spectral reasoning:") < target.index("Final SELFIES:")
-    assert target.index("Final SELFIES:") < target.index("Final canonical SMILES:")
-
-
-def test_structure_prompt_can_include_rule_contract(ethanol_sample) -> None:
-    """Rule-enabled prompts should expose NMR reasoning hints."""
-    prompt = build_structure_prompt(
-        ethanol_sample,
-        "Predict.\n\n{peak_tables}",
-        include_rules=True,
-    )
-    assert "1H NMR Peak Table" in prompt
-    assert "13C NMR Peak Table" in prompt
-    assert "NMR rules to consider" in prompt
+import src.evaluation.metrics as metrics_module
+from src.evaluation.metrics import evaluate_structure_prediction, tanimoto_similarity
+from src.evaluation.prompts import build_structure_prompt
 
 
 def test_structure_prompt_can_omit_formula_for_ablation(ethanol_sample) -> None:
@@ -33,23 +15,44 @@ def test_structure_prompt_can_omit_formula_for_ablation(ethanol_sample) -> None:
     assert "Molecular formula:" not in prompt
 
 
-def test_evaluate_predictions_handles_invalid_smiles(ethanol_sample) -> None:
+def test_structure_evaluation_handles_invalid_smiles(ethanol_sample) -> None:
     """Evaluation should not fail on invalid model structures."""
-    report = evaluate_predictions(
-        [
-            (
-                "Spectral reasoning: 1H and 13C NMR. "
-                "Final canonical SMILES: not_a_smiles"
-            )
-        ],
-        [ethanol_sample],
+    row = evaluate_structure_prediction(
+        "Final canonical SMILES: not_a_smiles",
+        ethanol_sample["canonical_smiles"],
     )
-    assert report["summary"]["samples"] == 1
-    assert report["rows"][0]["predicted_smiles"] is None
-    assert report["rows"][0]["tanimoto"] == 0.0
-    assert report["summary"]["invalid_structure_rate"] == 1.0
+    assert row["predicted_smiles"] is None
+    assert row["valid_smiles"] is False
+    assert row["tanimoto"] == 0.0
 
 
 def test_tanimoto_similarity_scores_exact_match() -> None:
     """Identical valid SMILES should score perfect Tanimoto similarity."""
     assert tanimoto_similarity("CCO", "CCO") == 1.0
+
+
+def test_structure_summary_reports_direct_prediction_metrics() -> None:
+    """Direct SMILES experiments should report structure-level outcomes."""
+    evaluate_structure = getattr(
+        metrics_module,
+        "evaluate_structure_prediction",
+        None,
+    )
+    summarize_structure = getattr(
+        metrics_module,
+        "summarize_structure_predictions",
+        None,
+    )
+
+    assert callable(evaluate_structure)
+    assert callable(summarize_structure)
+    rows = [
+        evaluate_structure("CCO", "CCO"),
+        evaluate_structure("not_a_smiles", "CCN"),
+    ]
+    summary = summarize_structure(rows)
+
+    assert summary["samples"] == 2
+    assert summary["exact_match"] == 0.5
+    assert summary["valid_smiles_rate"] == 0.5
+    assert summary["mean_tanimoto"] == 0.5

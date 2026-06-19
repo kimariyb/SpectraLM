@@ -1,0 +1,23 @@
+# Data-scaling evaluation for the 25k model on the shared 50k test split.
+model_path: /mnt/data/kimariyb/models/Qwen3-VL-8B-Instruct
+adapter_path: outputs/experiments/scale-25k-formula-seed3407/best_model
+max_seq_length: 4096
+load_in_4bit: true
+
+dataset_dir: dataset/paired_jsonl_full
+split: clean_50k_test
+image_backend: pre_rendered
+rendered_image_dir: dataset/paired_jsonl_full/rendered/768x432
+missing_image_policy: error
+image_size: [768, 432]
+h_snr: 500.0
+c_snr: 300.0
+render_seed: 3407
+include_formula: true
+max_samples: 5000
+max_new_tokens: 128
+temperature: 0.0
+top_p: 1.0
+seed: 3407
+
+output: outputs/experiments/predictions/scale-25k.jsonl

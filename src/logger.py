@@ -262,8 +262,6 @@ class TrainingLogger:
             "tokenizer_path",
             "dataset_path",
             "cache_dir",
-            "hf_cache_dir",
-            "render_cache_dir",
         }
 
         return {

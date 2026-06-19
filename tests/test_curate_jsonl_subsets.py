@@ -4,7 +4,21 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from script.curate_jsonl_subsets import build_subsets, filter_rows
+from script import curate_jsonl_subsets as curation
+
+
+build_subsets = curation.build_subsets
+filter_rows = curation.filter_rows
+
+
+def test_default_subset_sizes_match_50k_scaling_design() -> None:
+    """Default curation should materialize the approved nested scaling sets."""
+    assert getattr(curation, "DEFAULT_SUBSET_SIZES", None) == [
+        5_000,
+        10_000,
+        25_000,
+        50_000,
+    ]
 
 
 def _manifest_row(

@@ -334,7 +334,6 @@ def demo_sample() -> dict[str, Any]:
         "id": "demo",
         "smiles": "CCO",
         "canonical_smiles": "CCO",
-        "selfies": "[C][C][O]",
         "meta": {"source": "demo"},
         "13C_NMR": {
             "frequency": "101 MHz",
@@ -350,7 +349,6 @@ def demo_sample() -> dict[str, Any]:
                 {"shift": 2.0, "multiplicity": "brs", "J": [], "integration": 1.0},
             ],
         },
-        "spectrum": {"1H_image": None, "13C_image": None, "combined_image": None},
     }
 
 

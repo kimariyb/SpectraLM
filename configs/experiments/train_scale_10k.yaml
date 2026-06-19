@@ -1,28 +1,24 @@
-# Formula-free ablation for NMR -> structure training on one 48GB CUDA GPU.
-
-# Model
+# Data-scaling run: 10k formula-conditioned samples on one 48GB CUDA GPU.
 model_path: /mnt/data/kimariyb/models/Qwen3-VL-8B-Instruct
 max_seq_length: 4096
 load_in_4bit: true
 use_gradient_checkpointing: false
 
-# Dataset
 dataset_dir: dataset/paired_jsonl_full
 image_backend: pre_rendered
 rendered_image_dir: dataset/paired_jsonl_full/rendered/768x432
 missing_image_policy: error
-train_split_name: clean_50k_train
+train_split_name: clean_10k_train
 eval_split_name: clean_50k_val
-include_formula: false
+include_formula: true
 h_snr: 500.0
 c_snr: 300.0
 render_seed: 3407
 image_size: [768, 432]
 max_eval_samples: 5000
 
-# Training
 dry_run: false
-output_dir: outputs/experiments/no-formula-50k-seed3407
+output_dir: outputs/experiments/scale-10k-formula-seed3407
 per_device_train_batch_size: 32
 per_device_eval_batch_size: 32
 gradient_accumulation_steps: 1
@@ -36,13 +32,13 @@ lora_dropout: 0.0
 num_train_epochs: 2
 learning_rate: 2.0e-4
 weight_decay: 0.01
-warmup_steps: 100
+warmup_steps: 40
 lr_scheduler_type: cosine_with_restarts
 optim: adamw_8bit
 bf16: true
 fp16: false
 logging_steps: 10
-eval_steps: 500
-save_steps: 500
+eval_steps: 200
+save_steps: 200
 save_total_limit: 3
 seed: 3407

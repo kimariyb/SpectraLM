@@ -4,7 +4,7 @@ set -euo pipefail
 CSV_PATH="${1:-dataset/NMRexp_10to24_1_1004.csv}"
 OUT_DIR="${2:-dataset/paired_jsonl_full}"
 DB_PATH="${3:-${OUT_DIR}/candidates.sqlite}"
-SUBSET_SIZES="${SUBSET_SIZES:-50000 100000 300000}"
+SUBSET_SIZES="${SUBSET_SIZES:-5000 10000 25000 50000}"
 VAL_SIZE="${VAL_SIZE:-5000}"
 TEST_SIZE="${TEST_SIZE:-5000}"
 

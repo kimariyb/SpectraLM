@@ -24,6 +24,9 @@ from pathlib import Path
 from typing import Any
 
 
+DEFAULT_SUBSET_SIZES = [5_000, 10_000, 25_000, 50_000]
+
+
 def _read_manifest(path: str | Path) -> list[dict[str, Any]]:
     """Read manifest rows from CSV."""
     with Path(path).open("r", encoding="utf-8", newline="") as handle:
@@ -308,7 +311,7 @@ def main() -> None:
         "--subset-sizes",
         type=int,
         nargs="+",
-        default=[50_000, 100_000, 300_000],
+        default=DEFAULT_SUBSET_SIZES,
     )
     parser.add_argument("--val-size", type=int, default=5000)
     parser.add_argument("--test-size", type=int, default=5000)

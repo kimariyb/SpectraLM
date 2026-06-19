@@ -20,10 +20,8 @@ def ethanol_sample() -> dict[str, Any]:
         "id": "ethanol",
         "smiles": "CCO",
         "canonical_smiles": "CCO",
-        "selfies": "[C][C][O]",
         "molecular_formula": "C2H6O",
         "murcko_scaffold": "acyclic:CCO",
-        "functional_groups": ["alcohol"],
         "13C_NMR": {
             "frequency": "101 MHz",
             "solvent": "CDCl3",

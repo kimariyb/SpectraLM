@@ -24,14 +24,14 @@ import pandas as pd
 # Allow running from project root without PYTHONPATH.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from script.build_manifest import (
+from src.data.manifest import (
     MANIFEST_FIELDS,
     assign_scaffold_splits,
     manifest_summary,
     sample_manifest_row,
     write_split_files,
 )
-from src.data.molecules import canonicalize_smiles, smiles_to_selfies
+from src.data.molecules import canonicalize_smiles
 from src.data.utils import process_13c_peaks, process_1h_peaks, safe_literal_eval
 from src.io import write_json, write_rows_csv
 
@@ -240,10 +240,6 @@ def raw_pair_to_sample(
     c_row: dict[str, Any],
 ) -> dict[str, Any] | None:
     """Build one normalized sample from paired raw candidate rows."""
-    selfies = smiles_to_selfies(canonical)
-    if selfies is None:
-        return None
-
     try:
         h_raw = safe_literal_eval(h_row["processed"])
         c_raw = safe_literal_eval(c_row["processed"])
@@ -252,9 +248,7 @@ def raw_pair_to_sample(
 
     sample = {
         "id": sample_id(canonical),
-        "smiles": canonical,
         "canonical_smiles": canonical,
-        "selfies": selfies,
         "meta": {
             "source": "experimental",
             "source_13c": {
@@ -282,7 +276,6 @@ def raw_pair_to_sample(
             "solvent": h_row.get("solvent"),
             "peaks": process_1h_peaks(h_raw),
         },
-        "spectrum": {"1H_image": None, "13C_image": None},
     }
     return sample
 

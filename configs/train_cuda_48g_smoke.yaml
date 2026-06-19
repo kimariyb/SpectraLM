@@ -9,13 +9,11 @@ use_gradient_checkpointing: unsloth
 
 # Dataset
 dataset_dir: dataset/paired_jsonl_full
-dataset_backend: lazy_jsonl
 image_backend: pre_rendered
 rendered_image_dir: dataset/paired_jsonl_full/rendered/768x432
 missing_image_policy: error
 train_split_name: clean_50k_train
 eval_split_name: clean_50k_val
-target_format: smiles
 include_formula: true
 h_snr: 500.0
 c_snr: 300.0
@@ -28,7 +26,12 @@ max_eval_samples: 256
 dry_run: false
 output_dir: outputs/cuda-smoke-qwen3-vl-8b
 per_device_train_batch_size: 2
+per_device_eval_batch_size: 8
 gradient_accumulation_steps: 4
+dataloader_num_workers: 2
+dataloader_prefetch_factor: 2
+dataloader_persistent_workers: true
+dataloader_pin_memory: true
 lora_r: 16
 lora_alpha: 32
 lora_dropout: 0.0

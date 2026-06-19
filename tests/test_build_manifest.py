@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from script.build_manifest import build_manifest, sample_manifest_row
+from src.data.manifest import build_manifest, sample_manifest_row
 
 
 def test_sample_manifest_row_marks_missing_peaks_failed(ethanol_sample) -> None:
