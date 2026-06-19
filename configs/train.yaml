@@ -19,7 +19,7 @@ target_format: smiles            # smiles | reasoning
 h_snr: 500.0
 c_snr: 300.0
 render_seed: 3407
-# image_size: [448, 448]
+# image_size: [768, 432]          # preserves the native 16:9 NMR aspect ratio
 
 # Training
 output_dir: outputs/spectralm-qwen3-vl-8b

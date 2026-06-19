@@ -5,11 +5,6 @@ CONFIG="${1:-configs/train_cuda_48g_smoke.yaml}"
 : "${CUDA_VISIBLE_DEVICES:=0}"
 export CUDA_VISIBLE_DEVICES
 
-if [[ -f /opt/miniconda3/etc/profile.d/conda.sh ]]; then
-  source /opt/miniconda3/etc/profile.d/conda.sh
-  conda activate ml
-fi
-
 python - <<'PY'
 import torch
 

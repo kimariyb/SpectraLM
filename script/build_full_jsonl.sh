@@ -8,11 +8,6 @@ SUBSET_SIZES="${SUBSET_SIZES:-50000 100000 300000}"
 VAL_SIZE="${VAL_SIZE:-5000}"
 TEST_SIZE="${TEST_SIZE:-5000}"
 
-if [[ -f /opt/miniconda3/etc/profile.d/conda.sh ]]; then
-  source /opt/miniconda3/etc/profile.d/conda.sh
-  conda activate ml
-fi
-
 python script/build_paired_jsonl.py "${CSV_PATH}" \
   --out-dir "${OUT_DIR}" \
   --db "${DB_PATH}" \

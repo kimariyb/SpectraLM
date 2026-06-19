@@ -6,6 +6,7 @@ from src.data.utils import (
     parse_frequency_mhz,
     process_1h_peaks,
 )
+from src.spectra.render import SPECTRUM_POINTS, compute_13c
 
 
 def test_parse_couplings_from_mixed_values() -> None:
@@ -59,3 +60,18 @@ def test_process_1h_peaks_source_tuple_rows() -> None:
 def test_parse_frequency_uses_default_for_missing_value() -> None:
     """Frequency parsing should fall back for unknown values."""
     assert parse_frequency_mhz(None, default=500.0) == 500.0
+
+
+def test_render_compute_uses_configured_spectrum_points(ethanol_sample) -> None:
+    """Continuous spectra should use the lower point count for faster rendering."""
+    import numpy as np
+
+    x_axis, intensity = compute_13c(
+        ethanol_sample,
+        snr=300.0,
+        rng=np.random.default_rng(1),
+    )
+
+    assert SPECTRUM_POINTS == 16384
+    assert len(x_axis) == SPECTRUM_POINTS
+    assert len(intensity) == SPECTRUM_POINTS

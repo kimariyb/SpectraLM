@@ -6,7 +6,7 @@
 model_path: /mnt/data/kimariyb/models/Qwen3-VL-8B-Instruct
 max_seq_length: 4096
 load_in_4bit: true
-use_gradient_checkpointing: unsloth
+use_gradient_checkpointing: false
 
 # Dataset
 dataset_dir: dataset/paired_jsonl_full
@@ -18,14 +18,14 @@ include_formula: true
 h_snr: 500.0
 c_snr: 300.0
 render_seed: 3407
-image_size: [448, 448]
+image_size: [768, 432]
 max_eval_samples: 5000
 
 # Training
 dry_run: false
 output_dir: outputs/cuda-full-qwen3-vl-8b-formula
-per_device_train_batch_size: 1
-gradient_accumulation_steps: 16
+per_device_train_batch_size: 32
+gradient_accumulation_steps: 1
 lora_r: 16
 lora_alpha: 32
 lora_dropout: 0.0

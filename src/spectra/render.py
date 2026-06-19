@@ -33,6 +33,7 @@ from src.spectra.utils import add_noise, pseudo_voigt, multiplet_peaks
 DPI = 100
 WIDTH_PX = 1280
 HEIGHT_PX = 720
+SPECTRUM_POINTS = 16384
 
 
 def compute_1h(
@@ -58,7 +59,7 @@ def compute_1h(
     """
     nmr = sample["1H_NMR"]
     frequency_mhz = parse_frequency_mhz(nmr.get("frequency"), default=400.0)
-    x_axis = np.linspace(0.0, 12.0, 32768)
+    x_axis = np.linspace(0.0, 12.0, SPECTRUM_POINTS)
     intensity = np.zeros_like(x_axis)
     line_width_base = 0.008
     eta = 0.55
@@ -113,7 +114,7 @@ def compute_13c(
     tuple[np.ndarray, np.ndarray]
         Chemical shift axis and intensity array.
     """
-    x_axis = np.linspace(0.0, 220.0, 32768)
+    x_axis = np.linspace(0.0, 220.0, SPECTRUM_POINTS)
     intensity = np.zeros_like(x_axis)
     line_width_base = 0.06
     eta = 0.60
