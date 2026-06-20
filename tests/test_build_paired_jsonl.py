@@ -61,5 +61,6 @@ def test_build_paired_jsonl_end_to_end(tmp_path: Path) -> None:
     assert index_report["unsupported_nmr_rows"] == 1
     assert summary["jsonl_samples_written"] == 2
     assert {sample["canonical_smiles"] for sample in samples} == {"CCO", "CCN"}
+    assert {sample["molecular_formula"] for sample in samples} == {"C2H6O", "C2H7N"}
     assert (out_dir / "manifest.csv").exists()
     assert (out_dir / "train_ids.txt").exists()

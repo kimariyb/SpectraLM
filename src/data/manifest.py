@@ -10,8 +10,10 @@ from typing import Any
 from src.data.molecules import (
     canonicalize_smiles,
     heavy_atom_count,
+    molecule_elements,
     molecule_formula,
     murcko_scaffold,
+    unsupported_elements,
 )
 from src.data.utils import peak_count
 
@@ -23,6 +25,7 @@ MANIFEST_FIELDS = [
     "qc_reason",
     "canonical_smiles",
     "molecular_formula",
+    "element_symbols",
     "murcko_scaffold",
     "heavy_atom_count",
     "h_peak_count",
@@ -42,6 +45,8 @@ def sample_manifest_row(sample: dict[str, Any]) -> dict[str, Any]:
     h_peaks = peak_count(sample, "1H_NMR")
     c_peaks = peak_count(sample, "13C_NMR")
     formula = molecule_formula(canonical)
+    elements = molecule_elements(canonical)
+    unsupported = unsupported_elements(canonical)
     scaffold = murcko_scaffold(canonical)
 
     reasons: list[str] = []
@@ -49,6 +54,8 @@ def sample_manifest_row(sample: dict[str, Any]) -> dict[str, Any]:
         reasons.append("invalid_smiles")
     if formula is None:
         reasons.append("missing_formula")
+    if unsupported:
+        reasons.append(f"unsupported_elements:{','.join(sorted(unsupported))}")
     if scaffold is None:
         reasons.append("missing_scaffold")
     if h_peaks <= 0:
@@ -65,6 +72,7 @@ def sample_manifest_row(sample: dict[str, Any]) -> dict[str, Any]:
         "qc_reason": ";".join(reasons),
         "canonical_smiles": canonical or "",
         "molecular_formula": formula or "",
+        "element_symbols": ";".join(sorted(elements)),
         "murcko_scaffold": scaffold or "",
         "heavy_atom_count": heavy_atom_count(canonical),
         "h_peak_count": h_peaks,

@@ -1,11 +1,12 @@
 # SpectraLM CUDA smoke training configuration
 # Run this first on the CUDA server before launching the full run.
 
+
 # Model
 model_path: /mnt/data/kimariyb/models/Qwen3-VL-8B-Instruct
 max_seq_length: 4096
 load_in_4bit: true
-use_gradient_checkpointing: unsloth
+use_gradient_checkpointing: false
 
 # Dataset
 dataset_dir: dataset/paired_jsonl_full
@@ -24,10 +25,10 @@ max_eval_samples: 256
 
 # Training
 dry_run: false
-output_dir: outputs/cuda-smoke-qwen3-vl-8b
-per_device_train_batch_size: 2
-per_device_eval_batch_size: 8
-gradient_accumulation_steps: 4
+output_dir: outputs/experiments/structure/cuda-smoke-qwen3-vl-8b
+per_device_train_batch_size: 16
+per_device_eval_batch_size: 4
+gradient_accumulation_steps: 2
 dataloader_num_workers: 2
 dataloader_prefetch_factor: 2
 dataloader_persistent_workers: true

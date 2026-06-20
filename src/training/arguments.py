@@ -2,7 +2,26 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
+
+
+def build_vision_collator_kwargs(config: dict[str, Any]) -> dict[str, Any]:
+    """Build image-resize arguments for ``UnslothVisionDataCollator``."""
+    image_size = config.get("image_size")
+    if image_size is None:
+        return {}
+    if not isinstance(image_size, (list, tuple)) or len(image_size) != 2:
+        raise ValueError("image_size must contain exactly [width, height]")
+    width, height = (int(value) for value in image_size)
+    if width <= 0 or height <= 0:
+        raise ValueError("image_size dimensions must be positive")
+    return {"resize": (width, height)}
+
+
+def training_log_dir(config: dict[str, Any]) -> Path:
+    """Return the run-local training log directory."""
+    return Path(config.get("output_dir", "outputs")) / "logs"
 
 
 def build_sft_kwargs(config: dict[str, Any]) -> dict[str, Any]:

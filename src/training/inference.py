@@ -16,15 +16,14 @@ from __future__ import annotations
 
 import itertools
 import json
-import random
 import sys
 import traceback
 from pathlib import Path
 from typing import Any
-
 import torch
 from tqdm import tqdm
-
+from unsloth import FastVisionModel
+from peft import PeftModel
 from src.config import load_config
 from src.data.dataset import (
     load_sample_images,
@@ -34,7 +33,11 @@ from src.evaluation.metrics import (
     evaluate_structure_prediction,
     summarize_structure_predictions,
 )
-from src.evaluation.prompts import STRUCTURE_PROMPTS, build_structure_prompt
+from src.evaluation.prompts import (
+    build_structure_prompt,
+    select_structure_prompt,
+)
+from src.nmr_rules.engine import load_rule_library
 
 
 def load_model_for_inference(
@@ -62,9 +65,6 @@ def load_model_for_inference(
     tuple
         ``(model, tokenizer)`` ready for inference.
     """
-    from peft import PeftModel
-    from unsloth import FastVisionModel
-
     model, tokenizer = FastVisionModel.from_pretrained(
         base_model_path,
         max_seq_length=max_seq_length,
@@ -185,6 +185,9 @@ def main(config: dict[str, Any]) -> None:
     max_samples: int | None = config.get("max_samples", None)
     seed: int = int(config.get("seed", 3407))
     include_formula = bool(config.get("include_formula", True))
+    rule_context_enabled = bool(config.get("rule_context_enabled", False))
+    rule_validation_enabled = bool(config.get("rule_validation_enabled", False))
+    rule_library = str(load_rule_library()["library_name"])
 
     # ---- 1. Load model ---------------------------------------------------
     model, tokenizer = load_model_for_inference(
@@ -198,10 +201,13 @@ def main(config: dict[str, Any]) -> None:
     test_ds = build_inference_rows(config)
 
     # ---- 3. Select prompt template ---------------------------------------
-    rng = random.Random(seed)
-    prompt_template: str = rng.choice(STRUCTURE_PROMPTS)
+    prompt_template_index = int(config.get("prompt_template_index", 0))
+    prompt_template = select_structure_prompt(prompt_template_index)
 
     print(f"Formula included: {include_formula}")
+    print(f"Rule context enabled: {rule_context_enabled}")
+    print(f"Rule validation enabled: {rule_validation_enabled}")
+    print(f"Prompt template index: {prompt_template_index}")
     print(f"Prompt template: {prompt_template[:80]}...")
 
     # ---- 4. Inference loop -----------------------------------------------
@@ -240,6 +246,8 @@ def main(config: dict[str, Any]) -> None:
                 sample,
                 prompt_template,
                 include_formula=include_formula,
+                include_rule_context=rule_context_enabled,
+                max_rule_evidence=int(config.get("max_rule_evidence", 12)),
             )
 
             # --- generate ---
@@ -259,13 +267,26 @@ def main(config: dict[str, Any]) -> None:
                 traceback.print_exc()
 
             # --- scoring ---
-            structure_metrics = evaluate_structure_prediction(pred, label)
+            structure_metrics = evaluate_structure_prediction(
+                pred,
+                label,
+                sample=sample if rule_validation_enabled else None,
+                include_formula=include_formula,
+            )
             metric_rows.append(structure_metrics)
 
             record: dict[str, Any] = {
                 "idx": idx,
                 "id": sample.get("id"),
+                "prompt_template_index": prompt_template_index,
                 "include_formula": include_formula,
+                "rule_context_enabled": rule_context_enabled,
+                "rule_validation_enabled": rule_validation_enabled,
+                "rule_library": (
+                    rule_library
+                    if rule_context_enabled or rule_validation_enabled
+                    else None
+                ),
                 "prompt": prompt,
                 "prediction": pred,
                 "label": label,
@@ -278,6 +299,11 @@ def main(config: dict[str, Any]) -> None:
     print(f"Saved predictions to: {output_path}")
     summary = summarize_structure_predictions(metric_rows)
     summary["generation_errors"] = n_errors
+    summary["prompt_template_index"] = prompt_template_index
+    summary["rule_context_enabled"] = rule_context_enabled
+    summary["rule_validation_enabled"] = rule_validation_enabled
+    if rule_context_enabled or rule_validation_enabled:
+        summary["rule_library"] = rule_library
     summary_path = Path(
         config.get(
             "summary_output",

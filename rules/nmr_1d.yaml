@@ -1,0 +1,162 @@
+library_name: nmr_1d
+scope:
+  nuclei: [1H, 13C]
+  molecular_formula: optional
+  solvent_peaks: excluded
+  multidimensional_nmr: excluded
+
+h1_shift_regions:
+  - id: H1_SHIFT_ALKYL
+    min_ppm: 0.5
+    max_ppm: 2.0
+    conclusion: Proton signals occur in a common saturated alkyl region.
+    confidence: 0.55
+    strength: weak
+    human_tip: Treat this region as non-specific and combine it with integration, multiplicity, and coupling constants.
+  - id: H1_SHIFT_PI_OR_CARBONYL_ADJACENT
+    min_ppm: 1.7
+    max_ppm: 3.3
+    conclusion: Proton signals may be adjacent to a pi system or carbonyl group.
+    confidence: 0.55
+    strength: weak
+    human_tip: Benzylic, allylic, propargylic, and carbonyl-alpha environments overlap substantially in this region.
+  - id: H1_SHIFT_HETEROATOM_SP3
+    min_ppm: 3.0
+    max_ppm: 4.6
+    conclusion: Proton signals support an sp3 carbon adjacent to an electronegative heteroatom.
+    confidence: 0.68
+    strength: moderate
+    human_tip: Use the associated carbon shift and molecular formula to distinguish oxygen, nitrogen, and halogen substitution.
+  - id: H1_SHIFT_ALKENE
+    min_ppm: 4.5
+    max_ppm: 6.8
+    conclusion: Proton signals are compatible with vinylic environments.
+    confidence: 0.65
+    strength: moderate
+    human_tip: Coupling constants and the number of vinylic protons are more diagnostic than chemical shift alone.
+  - id: H1_SHIFT_AROMATIC
+    min_ppm: 6.0
+    max_ppm: 9.0
+    conclusion: Proton signals are compatible with aromatic or strongly conjugated environments.
+    confidence: 0.68
+    strength: moderate
+    human_tip: Use integration and signal patterns to estimate substitution and symmetry; do not assign a ring from shift alone.
+  - id: H1_SHIFT_ALDEHYDE
+    min_ppm: 9.0
+    max_ppm: 10.6
+    conclusion: A downfield proton signal supports an aldehydic environment.
+    confidence: 0.88
+    strength: strong
+    human_tip: Confirm this assignment with a carbon signal in the aldehyde or ketone carbonyl region.
+  - id: H1_SHIFT_ACIDIC_OH
+    min_ppm: 10.0
+    max_ppm: 13.5
+    conclusion: A very downfield proton signal may be an acidic or strongly hydrogen-bonded proton.
+    confidence: 0.62
+    strength: moderate
+    human_tip: Exchangeable-proton positions and integrations vary with concentration, temperature, and sample conditions.
+
+c13_shift_regions:
+  - id: C13_SHIFT_ALKYL
+    min_ppm: 0.0
+    max_ppm: 50.0
+    conclusion: Carbon signals occur in a common saturated alkyl region.
+    confidence: 0.58
+    strength: weak
+    human_tip: This broad region is rarely diagnostic without proton evidence or a molecular formula.
+  - id: C13_SHIFT_HETEROATOM_SP3
+    min_ppm: 45.0
+    max_ppm: 90.0
+    conclusion: Carbon signals support heteroatom-substituted sp3 carbon environments.
+    confidence: 0.68
+    strength: moderate
+    human_tip: Oxygenated and nitrogen-bearing carbons overlap; cross-check the elemental composition.
+  - id: C13_SHIFT_ALKYNE
+    min_ppm: 65.0
+    max_ppm: 100.0
+    conclusion: Carbon signals are compatible with sp-hybridized carbon environments.
+    confidence: 0.52
+    strength: weak
+    human_tip: This region overlaps with heteroatom-substituted sp3 carbons, so DBE and proton evidence are essential.
+  - id: C13_SHIFT_UNSATURATED
+    min_ppm: 100.0
+    max_ppm: 165.0
+    conclusion: Carbon signals support alkene, aromatic, or other conjugated sp2 environments.
+    confidence: 0.70
+    strength: moderate
+    human_tip: Count distinct signals and compare them with proton integration to assess substitution and symmetry.
+  - id: C13_SHIFT_HETERO_CARBONYL
+    min_ppm: 160.0
+    max_ppm: 185.0
+    conclusion: Carbon signals support a carboxylic-acid-derivative or conjugated heteroatom-bearing carbonyl environment.
+    confidence: 0.82
+    strength: strong
+    human_tip: Esters, amides, acids, and related carbonyls overlap; use the formula and nearby proton environments.
+  - id: C13_SHIFT_ALDEHYDE_KETONE
+    min_ppm: 185.0
+    max_ppm: 220.0
+    conclusion: Carbon signals support an aldehyde or ketone carbonyl environment.
+    confidence: 0.90
+    strength: strong
+    human_tip: An aldehydic proton near 9-10.6 ppm distinguishes many aldehydes from ketones.
+
+fragment_rules:
+  - id: H1_FRAGMENT_ETHYL_001
+    type: paired_multiplets
+    first: {integration: 3.0, multiplicities: [t]}
+    second: {integration: 2.0, multiplicities: [q]}
+    integration_tolerance: 0.6
+    matching_j_tolerance_hz: 0.5
+    conclusion: A 3H triplet and 2H quartet with matching coupling constants support an ethyl fragment.
+    confidence: 0.92
+    strength: strong
+    human_tip: Matching J values are more diagnostic than either multiplicity or chemical shift alone.
+  - id: H1_FRAGMENT_ISOPROPYL_001
+    type: paired_multiplets
+    first: {integration: 6.0, multiplicities: [d]}
+    second: {integration: 1.0, multiplicities: [sept, hept, m]}
+    integration_tolerance: 0.8
+    matching_j_tolerance_hz: 0.7
+    conclusion: A 6H doublet and 1H septet-like signal with matching coupling support an isopropyl fragment.
+    confidence: 0.88
+    strength: strong
+    human_tip: Overlap may make the methine appear as a multiplet; verify the 6:1 integration ratio.
+  - id: H1_FRAGMENT_TERT_BUTYL_001
+    type: single_peak
+    integration: 9.0
+    integration_tolerance: 1.0
+    multiplicities: [s]
+    conclusion: A 9H singlet supports a tert-butyl-like group or three equivalent methyl groups.
+    confidence: 0.86
+    strength: strong
+    human_tip: Confirm that the carbon signal count is compatible with three equivalent methyl groups.
+  - id: H1_FRAGMENT_METHOXY_001
+    type: single_peak
+    integration: 3.0
+    integration_tolerance: 0.6
+    multiplicities: [s]
+    min_ppm: 3.0
+    max_ppm: 4.3
+    conclusion: A 3H singlet in the heteroatom-adjacent region supports a methoxy-like group.
+    confidence: 0.74
+    strength: moderate
+    human_tip: N-methyl and other isolated heteroatom-bound methyl groups can produce similar evidence.
+  - id: H1_FRAGMENT_ACYL_METHYL_001
+    type: single_peak
+    integration: 3.0
+    integration_tolerance: 0.6
+    multiplicities: [s]
+    min_ppm: 1.8
+    max_ppm: 2.8
+    conclusion: A 3H singlet in this region supports a methyl group adjacent to a carbonyl or conjugated center.
+    confidence: 0.66
+    strength: moderate
+    human_tip: Benzylic and other pi-adjacent methyl groups overlap, so require carbon evidence before assigning an acetyl group.
+
+references:
+  - id: IUPAC_NMR_2001
+    url: https://doi.org/10.1351/pac200173111795
+  - id: NIST_CHEMISTRY_WEBBOOK
+    url: https://webbook.nist.gov/chemistry/
+  - id: AIST_SDBS
+    url: https://sdbs.db.aist.go.jp/

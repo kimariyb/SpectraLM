@@ -17,7 +17,12 @@ from unsloth.trainer import UnslothVisionDataCollator
 from src.config import TrainingLoggerCallback, load_config
 from src.logger import TrainingLogger
 from src.data.dataset import load_lazy_nmr_dataset
-from src.training.arguments import build_sft_kwargs
+from src.data.tasks import normalize_task_weights
+from src.training.arguments import (
+    build_sft_kwargs,
+    build_vision_collator_kwargs,
+    training_log_dir,
+)
 from trl import SFTConfig, SFTTrainer
 
 
@@ -39,6 +44,8 @@ def main(config: dict[str, Any]) -> None:
         lazy-JSONL CUDA training path.
     """
     seed: int = config.get("seed", 3407)
+    rule_context_enabled = bool(config.get("rule_context_enabled", False))
+    task_weights = normalize_task_weights(config.get("task_weights"))
 
     # 1. Build datasets first so dry-run works without loading a VLM.
     dataset_dir: str = config["dataset_dir"]
@@ -47,6 +54,9 @@ def main(config: dict[str, Any]) -> None:
 
     dataset_kwargs = {
         "include_formula": config.get("include_formula", True),
+        "include_rule_context": rule_context_enabled,
+        "max_rule_evidence": int(config.get("max_rule_evidence", 12)),
+        "task_weights": task_weights,
         "seed": seed,
         "h_snr": float(config.get("h_snr", 500.0)),
         "c_snr": float(config.get("c_snr", 300.0)),
@@ -59,11 +69,13 @@ def main(config: dict[str, Any]) -> None:
     train_ds = load_lazy_nmr_dataset(
         dataset_dir,
         split=train_split_name,
+        candidate_sidecar_path=config.get("train_candidate_sidecar_path"),
         **dataset_kwargs,
     )
     eval_ds = load_lazy_nmr_dataset(
         dataset_dir,
         split=eval_split_name,
+        candidate_sidecar_path=config.get("eval_candidate_sidecar_path"),
         **dataset_kwargs,
     )
 
@@ -108,9 +120,10 @@ def main(config: dict[str, Any]) -> None:
     FastVisionModel.for_training(model)
 
     sft_kwargs = build_sft_kwargs(config)
+    vision_collator_kwargs = build_vision_collator_kwargs(config)
 
     training_logger = TrainingLogger(
-        output_dir="outputs/logs",
+        output_dir=training_log_dir(config),
         config={
             "model_name": Path(config.get("model_path")).name,
             "learning_rate": sft_kwargs['learning_rate'],
@@ -124,7 +137,18 @@ def main(config: dict[str, Any]) -> None:
             ),
             "eval_steps": sft_kwargs['eval_steps'],
             "include_formula": config.get("include_formula", True),
+            "rule_context_enabled": rule_context_enabled,
+            "max_rule_evidence": int(config.get("max_rule_evidence", 12)),
+            "task_weights": task_weights,
+            "train_candidate_sidecar_path": config.get(
+                "train_candidate_sidecar_path"
+            ),
+            "eval_candidate_sidecar_path": config.get(
+                "eval_candidate_sidecar_path"
+            ),
             "image_backend": config.get("image_backend", "lazy_render"),
+            "image_size": config.get("image_size"),
+            "collator_resize": vision_collator_kwargs.get("resize"),
             "rendered_image_dir": config.get("rendered_image_dir"),
             "train_split_name": train_split_name,
             "eval_split_name": eval_split_name,
@@ -141,7 +165,11 @@ def main(config: dict[str, Any]) -> None:
     trainer = SFTTrainer(
         model=model,
         tokenizer=tokenizer,
-        data_collator=UnslothVisionDataCollator(model, tokenizer),
+        data_collator=UnslothVisionDataCollator(
+            model,
+            tokenizer,
+            **vision_collator_kwargs,
+        ),
         callbacks=[logger_callback],
         train_dataset=train_ds,
         eval_dataset=eval_ds,

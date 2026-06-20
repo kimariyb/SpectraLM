@@ -229,3 +229,4 @@ cache/
 # unsloth cache
 unsloth_*/
 
+outputs/

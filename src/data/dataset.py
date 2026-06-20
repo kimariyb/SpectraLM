@@ -7,15 +7,20 @@ import json
 import os
 import warnings
 from pathlib import Path
-from typing import Any, BinaryIO, Iterator
+from typing import Any, BinaryIO, Iterator, Mapping, Sequence
 
 import numpy as np
 from PIL import Image as PILImage
 from PIL.Image import Resampling
 from torch.utils.data import Dataset
 
-from src.data.molecules import sample_smiles
-from src.evaluation.prompts import STRUCTURE_PROMPTS, build_structure_prompt
+from src.data.tasks import (
+    CANDIDATE_RANKING,
+    STRUCTURE_PREDICTION,
+    build_task_example,
+    normalize_task_weights,
+)
+from src.evaluation.prompts import STRUCTURE_PROMPTS
 from src.spectra.render import carbon_to_spectra, hydrogen_to_spectra
 
 
@@ -61,6 +66,28 @@ def _jsonl_sample_iter(path: Path) -> Iterator[dict[str, Any]]:
                 yield json.loads(text)
 
 
+def load_candidate_map(path: str | Path) -> dict[str, list[str]]:
+    """Load a candidate-ranking JSONL sidecar keyed by sample ID.
+
+    Parameters
+    ----------
+    path
+        Candidate sidecar path.
+
+    Returns
+    -------
+    dict[str, list[str]]
+        Candidate SMILES for each sample with formula-matched alternatives.
+    """
+    candidate_map: dict[str, list[str]] = {}
+    for row in _jsonl_sample_iter(Path(path)):
+        sample_id = str(row.get("id", ""))
+        candidates = [str(value) for value in row.get("candidates", [])]
+        if sample_id and candidates:
+            candidate_map[sample_id] = candidates
+    return candidate_map
+
+
 def _split_ids_path(base: Path, split: str) -> Path:
     """Return the direct or curated ID-list path for a split."""
     split_key = {"validation": "val"}.get(split, split)
@@ -96,29 +123,53 @@ def _load_jsonl_samples(base: Path, split: str | None) -> list[dict[str, Any]]:
 
 
 class NMRMessageTransform:
-    """Convert raw NMR samples and images into structure-SFT messages."""
+    """Convert raw NMR samples and images into configurable SFT tasks."""
 
     def __init__(
         self,
         *,
         seed: int | None = 3407,
         include_formula: bool = True,
+        include_rule_context: bool = False,
+        max_rule_evidence: int = 12,
+        task_weights: Mapping[str, float] | None = None,
+        candidate_map: Mapping[str, Sequence[str]] | None = None,
     ) -> None:
         self.rng = np.random.default_rng(seed)
         self.include_formula = bool(include_formula)
+        self.include_rule_context = bool(include_rule_context)
+        self.max_rule_evidence = int(max_rule_evidence)
+        self.task_weights = normalize_task_weights(task_weights)
+        self.task_names = tuple(self.task_weights)
+        self.task_probabilities = tuple(self.task_weights.values())
+        self.candidate_map = dict(candidate_map or {})
 
     def __call__(self, batch: dict[str, Any]) -> dict[str, list[Any]]:
-        """Build image-plus-table prompts and canonical-SMILES targets."""
+        """Build image-plus-table prompts and task-specific targets."""
         h_images = self._as_list(batch["h_image"])
         c_images = self._as_list(batch["c_image"])
         samples = self._as_list(batch["sample"])
         messages_batch: list[list[dict[str, Any]]] = []
 
         for h_image, c_image, sample in zip(h_images, c_images, samples):
-            prompt = build_structure_prompt(
+            task = str(
+                self.rng.choice(
+                    self.task_names,
+                    p=self.task_probabilities,
+                )
+            )
+            sample_id = str(sample.get("id", ""))
+            candidates = self.candidate_map.get(sample_id)
+            if task == CANDIDATE_RANKING and not candidates:
+                task = STRUCTURE_PREDICTION
+            example = build_task_example(
                 sample,
-                prompt=str(self.rng.choice(STRUCTURE_PROMPTS)),
+                task,
+                candidates=candidates,
+                structure_prompt=str(self.rng.choice(STRUCTURE_PROMPTS)),
                 include_formula=self.include_formula,
+                include_rule_context=self.include_rule_context,
+                max_rule_evidence=self.max_rule_evidence,
             )
             messages_batch.append(
                 [
@@ -127,13 +178,13 @@ class NMRMessageTransform:
                         "content": [
                             {"type": "image", "image": h_image},
                             {"type": "image", "image": c_image},
-                            {"type": "text", "text": prompt},
+                            {"type": "text", "text": example.prompt},
                         ],
                     },
                     {
                         "role": "assistant",
                         "content": [
-                            {"type": "text", "text": sample_smiles(sample) or ""}
+                            {"type": "text", "text": example.target}
                         ],
                     },
                 ]
@@ -251,6 +302,10 @@ class LazyNMRJsonlDataset(Dataset):
         *,
         split: str = "train",
         include_formula: bool = True,
+        include_rule_context: bool = False,
+        max_rule_evidence: int = 12,
+        task_weights: Mapping[str, float] | None = None,
+        candidate_sidecar_path: str | Path | None = None,
         seed: int | None = 3407,
         h_snr: float = 500.0,
         c_snr: float = 300.0,
@@ -290,6 +345,14 @@ class LazyNMRJsonlDataset(Dataset):
         self.transform = NMRMessageTransform(
             seed=seed,
             include_formula=include_formula,
+            include_rule_context=include_rule_context,
+            max_rule_evidence=max_rule_evidence,
+            task_weights=task_weights,
+            candidate_map=(
+                load_candidate_map(candidate_sidecar_path)
+                if candidate_sidecar_path is not None
+                else None
+            ),
         )
         self.offsets = self._index_offsets()
 
@@ -462,7 +525,7 @@ class LazyNMRJsonlDataset(Dataset):
             pass
 
     def __getitem__(self, idx: int) -> dict[str, Any]:
-        """Return one multimodal structure-prediction instruction."""
+        """Return one multimodal NMR supervision instruction."""
         sample = self._load_sample_at(self.offsets[idx])
         h_image, c_image = load_sample_images(
             sample,
@@ -489,6 +552,10 @@ def load_lazy_nmr_dataset(
     *,
     split: str = "train",
     include_formula: bool = True,
+    include_rule_context: bool = False,
+    max_rule_evidence: int = 12,
+    task_weights: Mapping[str, float] | None = None,
+    candidate_sidecar_path: str | Path | None = None,
     seed: int | None = 3407,
     h_snr: float = 500.0,
     c_snr: float = 300.0,
@@ -503,6 +570,10 @@ def load_lazy_nmr_dataset(
         dataset_dir,
         split=split,
         include_formula=include_formula,
+        include_rule_context=include_rule_context,
+        max_rule_evidence=max_rule_evidence,
+        task_weights=task_weights,
+        candidate_sidecar_path=candidate_sidecar_path,
         seed=seed,
         h_snr=h_snr,
         c_snr=c_snr,

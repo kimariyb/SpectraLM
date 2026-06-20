@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+import re
 from typing import Any
 
 from rdkit import Chem, RDLogger
@@ -11,6 +12,11 @@ from rdkit.Chem.Scaffolds import MurckoScaffold
 
 
 RDLogger.DisableLog("rdApp.*")
+
+ALLOWED_ELEMENT_SYMBOLS = frozenset(
+    {"H", "C", "N", "O", "F", "Si", "P", "S", "Cl", "Br", "I"}
+)
+_FORMULA_ELEMENT_PATTERN = re.compile(r"[A-Z][a-z]?")
 
 
 def sample_smiles(sample: dict[str, Any]) -> str | None:
@@ -46,6 +52,37 @@ def molecule_formula(smiles: str | None) -> str | None:
     if mol is None:
         return None
     return rdMolDescriptors.CalcMolFormula(mol)
+
+
+@lru_cache(maxsize=8192)
+def molecule_elements(smiles: str | None) -> frozenset[str]:
+    """Return all element symbols in a valid molecule, including hydrogen.
+
+    Parameters
+    ----------
+    smiles
+        Molecular SMILES.
+
+    Returns
+    -------
+    frozenset[str]
+        Element symbols, or an empty set for invalid input.
+    """
+    formula = molecule_formula(smiles)
+    if formula is None:
+        return frozenset()
+    return frozenset(_FORMULA_ELEMENT_PATTERN.findall(formula))
+
+
+def unsupported_elements(smiles: str | None) -> frozenset[str]:
+    """Return molecule elements outside the common-element policy."""
+    return molecule_elements(smiles) - ALLOWED_ELEMENT_SYMBOLS
+
+
+def has_only_allowed_elements(smiles: str | None) -> bool:
+    """Return whether a valid molecule uses only allowed elements."""
+    canonical = canonicalize_smiles(smiles)
+    return canonical is not None and not unsupported_elements(canonical)
 
 
 def murcko_scaffold(smiles: str | None) -> str | None:

@@ -31,7 +31,11 @@ from src.data.manifest import (
     sample_manifest_row,
     write_split_files,
 )
-from src.data.molecules import canonicalize_smiles
+from src.data.molecules import (
+    canonicalize_smiles,
+    has_only_allowed_elements,
+    molecule_formula,
+)
 from src.data.utils import process_13c_peaks, process_1h_peaks, safe_literal_eval
 from src.io import write_json, write_rows_csv
 
@@ -240,6 +244,8 @@ def raw_pair_to_sample(
     c_row: dict[str, Any],
 ) -> dict[str, Any] | None:
     """Build one normalized sample from paired raw candidate rows."""
+    if not has_only_allowed_elements(canonical):
+        return None
     try:
         h_raw = safe_literal_eval(h_row["processed"])
         c_raw = safe_literal_eval(c_row["processed"])
@@ -249,6 +255,7 @@ def raw_pair_to_sample(
     sample = {
         "id": sample_id(canonical),
         "canonical_smiles": canonical,
+        "molecular_formula": molecule_formula(canonical),
         "meta": {
             "source": "experimental",
             "source_13c": {

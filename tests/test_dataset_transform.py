@@ -154,6 +154,70 @@ def test_message_transform_can_omit_formula(ethanol_sample) -> None:
     assert "Molecular formula:" not in prompt
 
 
+def test_message_transform_can_add_formula_free_rule_context(ethanol_sample) -> None:
+    """Training messages should propagate the opt-in rule-context setting."""
+    transform = NMRMessageTransform(
+        seed=1,
+        include_formula=False,
+        include_rule_context=True,
+        max_rule_evidence=4,
+    )
+    batch = {
+        "h_image": [None],
+        "c_image": [None],
+        "sample": [ethanol_sample],
+    }
+
+    output = transform(batch)
+    prompt = output["messages"][0][0]["content"][2]["text"]
+
+    assert "## Derived 1D NMR Constraints" in prompt
+    assert "ethyl fragment" in prompt
+    assert "Molecular formula:" not in prompt
+    assert "DBE" not in prompt
+
+
+def test_message_transform_can_force_functional_group_task(ethanol_sample) -> None:
+    """Task weights should select auxiliary supervision without changing images."""
+    transform = NMRMessageTransform(
+        seed=1,
+        task_weights={"functional_group_recognition": 1.0},
+    )
+    output = transform(
+        {
+            "h_image": [None],
+            "c_image": [None],
+            "sample": [ethanol_sample],
+        }
+    )
+
+    messages = output["messages"][0]
+    assert "functional group" in messages[0]["content"][2]["text"].lower()
+    assert messages[1]["content"][0]["text"] == '["alcohol"]'
+
+
+def test_message_transform_falls_back_when_candidates_are_missing(
+    ethanol_sample,
+) -> None:
+    """Unavailable candidate sets should fall back to the main task."""
+    transform = NMRMessageTransform(
+        seed=1,
+        task_weights={"candidate_ranking": 1.0},
+        candidate_map={},
+    )
+    output = transform(
+        {
+            "h_image": [None],
+            "c_image": [None],
+            "sample": [ethanol_sample],
+        }
+    )
+
+    messages = output["messages"][0]
+    assert "canonical SMILES" in messages[0]["content"][2]["text"]
+    assert messages[1]["content"][0]["text"] == "CCO"
+
+
 def test_resolve_jsonl_samples_with_split_ids(tmp_path: Path, ethanol_sample) -> None:
     """JSONL datasets should load only ids listed in the requested split."""
     samples = []
@@ -220,6 +284,46 @@ def test_load_lazy_nmr_dataset_from_jsonl_directory(tmp_path: Path, ethanol_samp
     assert len(ds) == 1
     assert [message["role"] for message in row["messages"]] == ["user", "assistant"]
     assert row["messages"][0]["content"][0]["image"].size == (64, 64)
+    assert row["messages"][1]["content"][0]["text"] == "CCO"
+
+
+def test_lazy_dataset_loads_candidate_sidecar_for_ranking(
+    tmp_path: Path,
+    ethanol_sample,
+) -> None:
+    """Lazy training should connect sidecar candidates to ranking prompts."""
+    sample = dict(ethanol_sample)
+    sample["id"] = "sample-0"
+    (tmp_path / "samples.jsonl").write_text(
+        json.dumps(sample) + "\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "train_ids.txt").write_text("sample-0\n", encoding="utf-8")
+    sidecar = tmp_path / "candidates.jsonl"
+    sidecar.write_text(
+        json.dumps(
+            {
+                "id": "sample-0",
+                "target": "CCO",
+                "candidates": ["COC", "CCO"],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    dataset = load_lazy_nmr_dataset(
+        tmp_path,
+        split="train",
+        image_size=(32, 18),
+        task_weights={"candidate_ranking": 1.0},
+        candidate_sidecar_path=sidecar,
+    )
+    row = dataset[0]
+    prompt = row["messages"][0]["content"][2]["text"]
+
+    assert "1. COC" in prompt
+    assert "2. CCO" in prompt
     assert row["messages"][1]["content"][0]["text"] == "CCO"
 
 

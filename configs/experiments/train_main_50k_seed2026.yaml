@@ -1,4 +1,5 @@
 # Main 50k formula-conditioned replication with seed 2026.
+
 model_path: /mnt/data/kimariyb/models/Qwen3-VL-8B-Instruct
 max_seq_length: 4096
 load_in_4bit: true
@@ -18,10 +19,10 @@ image_size: [768, 432]
 max_eval_samples: 5000
 
 dry_run: false
-output_dir: outputs/experiments/main-50k-formula-seed2026
-per_device_train_batch_size: 32
-per_device_eval_batch_size: 32
-gradient_accumulation_steps: 1
+output_dir: outputs/experiments/structure/main-50k-formula-seed2026
+per_device_train_batch_size: 16
+per_device_eval_batch_size: 4
+gradient_accumulation_steps: 2
 dataloader_num_workers: 4
 dataloader_prefetch_factor: 2
 dataloader_persistent_workers: true

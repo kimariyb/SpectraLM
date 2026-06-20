@@ -7,17 +7,19 @@ cd "${ROOT_DIR}"
 usage() {
   cat <<'EOF'
 Usage:
-  bash script/run_50k_experiment.sh list
-  bash script/run_50k_experiment.sh train <run-name>
-  bash script/run_50k_experiment.sh infer <run-name>
+  bash script/run_experiment.sh list
+  bash script/run_experiment.sh train <run-name>
+  bash script/run_experiment.sh infer <run-name>
 
 Training runs:
   scale-5k  scale-10k  scale-25k
   main-3407  main-42  main-2026  no-formula
+  rules-50k  rules-no-formula  multitask-50k
 
 Inference runs:
   zero-shot  scale-5k  scale-10k  scale-25k
   main-3407  main-42  main-2026  no-formula
+  rules-50k  rules-no-formula  multitask-50k
 EOF
 }
 
@@ -49,6 +51,12 @@ case "${stage}:${run_name}" in
     config="configs/experiments/train_main_50k_seed2026.yaml" ;;
   train:no-formula)
     config="configs/train_cuda_48g_no_formula.yaml" ;;
+  train:rules-50k)
+    config="configs/experiments/train_rules_50k.yaml" ;;
+  train:rules-no-formula)
+    config="configs/experiments/train_rules_no_formula_50k.yaml" ;;
+  train:multitask-50k)
+    config="configs/experiments/train_multitask_50k.yaml" ;;
   infer:zero-shot)
     config="configs/experiments/infer_zero_shot_50k.yaml" ;;
   infer:scale-5k)
@@ -65,6 +73,12 @@ case "${stage}:${run_name}" in
     config="configs/experiments/infer_main_50k_seed2026.yaml" ;;
   infer:no-formula)
     config="configs/experiments/infer_no_formula_50k.yaml" ;;
+  infer:rules-50k)
+    config="configs/experiments/infer_rules_50k.yaml" ;;
+  infer:rules-no-formula)
+    config="configs/experiments/infer_rules_no_formula_50k.yaml" ;;
+  infer:multitask-50k)
+    config="configs/experiments/infer_multitask_50k.yaml" ;;
   *)
     usage >&2
     exit 2 ;;

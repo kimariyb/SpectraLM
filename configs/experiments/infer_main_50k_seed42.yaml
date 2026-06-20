@@ -1,6 +1,8 @@
 # Main formula-conditioned 50k model, seed 42.
+prompt_template_index: 0
+
 model_path: /mnt/data/kimariyb/models/Qwen3-VL-8B-Instruct
-adapter_path: outputs/experiments/main-50k-formula-seed42/best_model
+adapter_path: outputs/experiments/structure/main-50k-formula-seed42/best_model
 max_seq_length: 4096
 load_in_4bit: true
 
@@ -20,4 +22,4 @@ temperature: 0.0
 top_p: 1.0
 seed: 3407
 
-output: outputs/experiments/predictions/main-50k-seed42.jsonl
+output: outputs/experiments/structure/predictions/main-50k-seed42.jsonl

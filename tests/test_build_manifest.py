@@ -5,6 +5,13 @@ from __future__ import annotations
 from src.data.manifest import build_manifest, sample_manifest_row
 
 
+def test_manifest_fields_include_element_symbols(ethanol_sample) -> None:
+    """Manifest rows should expose the element policy input for auditing."""
+    row = sample_manifest_row(ethanol_sample)
+
+    assert row["element_symbols"] == "C;H;O"
+
+
 def test_sample_manifest_row_marks_missing_peaks_failed(ethanol_sample) -> None:
     """Rows with missing paired spectra should be excluded by QC."""
     sample = dict(ethanol_sample)
