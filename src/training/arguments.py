@@ -45,6 +45,10 @@ def build_sft_kwargs(config: dict[str, Any]) -> dict[str, Any]:
     if eval_batch_size <= 0:
         raise ValueError("per_device_eval_batch_size must be positive")
 
+    eval_accumulation_steps = int(config.get("eval_accumulation_steps", 4))
+    if eval_accumulation_steps <= 0:
+        raise ValueError("eval_accumulation_steps must be positive")
+
     persistent_workers = bool(
         config.get("dataloader_persistent_workers", False)
     )
@@ -58,6 +62,7 @@ def build_sft_kwargs(config: dict[str, Any]) -> dict[str, Any]:
             "per_device_train_batch_size", 4
         ),
         "per_device_eval_batch_size": eval_batch_size,
+        "eval_accumulation_steps": eval_accumulation_steps,
         "gradient_accumulation_steps": config.get(
             "gradient_accumulation_steps", 4
         ),

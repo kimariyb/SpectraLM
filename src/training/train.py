@@ -131,6 +131,7 @@ def main(config: dict[str, Any]) -> None:
             "per_device_train_batch_size": sft_kwargs["per_device_train_batch_size"],
             "gradient_accumulation_steps": sft_kwargs['gradient_accumulation_steps'],
             "per_device_eval_batch_size": sft_kwargs["per_device_eval_batch_size"],
+            "eval_accumulation_steps": sft_kwargs["eval_accumulation_steps"],
             "dataloader_num_workers": sft_kwargs["dataloader_num_workers"],
             "dataloader_prefetch_factor": sft_kwargs.get(
                 "dataloader_prefetch_factor"

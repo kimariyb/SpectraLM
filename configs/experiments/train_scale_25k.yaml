@@ -22,6 +22,7 @@ dry_run: false
 output_dir: outputs/experiments/structure/scale-25k-formula-seed3407
 per_device_train_batch_size: 16
 per_device_eval_batch_size: 4
+eval_accumulation_steps: 4
 gradient_accumulation_steps: 2
 dataloader_num_workers: 4
 dataloader_prefetch_factor: 2

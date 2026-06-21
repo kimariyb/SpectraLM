@@ -6,7 +6,7 @@
 model_path: /mnt/data/kimariyb/models/Qwen3-VL-8B-Instruct
 max_seq_length: 4096
 load_in_4bit: true
-use_gradient_checkpointing: false
+use_gradient_checkpointing: unsloth
 
 # Dataset
 dataset_dir: dataset/paired_jsonl_full
@@ -26,9 +26,10 @@ max_eval_samples: 256
 # Training
 dry_run: false
 output_dir: outputs/experiments/structure/cuda-smoke-qwen3-vl-8b
-per_device_train_batch_size: 16
-per_device_eval_batch_size: 4
-gradient_accumulation_steps: 2
+per_device_train_batch_size: 32
+per_device_eval_batch_size: 16
+eval_accumulation_steps: 4
+gradient_accumulation_steps: 4
 dataloader_num_workers: 2
 dataloader_prefetch_factor: 2
 dataloader_persistent_workers: true

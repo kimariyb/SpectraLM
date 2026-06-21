@@ -95,6 +95,19 @@ def _assert_no_legacy_keys(config: dict) -> None:
     assert legacy.isdisjoint(config)
 
 
+def test_all_training_configs_set_eval_accumulation_steps() -> None:
+    """Every formal and smoke training run should use the shared default."""
+    training_configs = [
+        path
+        for path in CONFIG_DIR.rglob("*.yaml")
+        if path.name.startswith("train_")
+    ]
+    assert training_configs
+    for path in training_configs:
+        config = yaml.safe_load(path.read_text(encoding="utf-8"))
+        assert config["eval_accumulation_steps"] == 4, path
+
+
 def test_training_matrix_uses_nested_splits_and_shared_validation() -> None:
     """All runs should implement the approved scaling and seed design."""
     output_dirs: set[str] = set()

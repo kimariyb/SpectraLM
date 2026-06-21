@@ -28,6 +28,7 @@ def test_build_sft_kwargs_exposes_dataloader_and_eval_batch_settings() -> None:
         {
             "num_train_epochs": 1,
             "per_device_eval_batch_size": 32,
+            "eval_accumulation_steps": 8,
             "dataloader_num_workers": 4,
             "dataloader_prefetch_factor": 2,
             "dataloader_persistent_workers": True,
@@ -36,10 +37,26 @@ def test_build_sft_kwargs_exposes_dataloader_and_eval_batch_settings() -> None:
     )
 
     assert kwargs["per_device_eval_batch_size"] == 32
+    assert kwargs["eval_accumulation_steps"] == 8
     assert kwargs["dataloader_num_workers"] == 4
     assert kwargs["dataloader_prefetch_factor"] == 2
     assert kwargs["dataloader_persistent_workers"] is True
     assert kwargs["dataloader_pin_memory"] is True
+
+
+def test_build_sft_kwargs_defaults_eval_accumulation_steps_to_four() -> None:
+    """Evaluation logits should be moved off-device at a bounded cadence."""
+    kwargs = _build_sft_kwargs({"num_train_epochs": 1})
+
+    assert kwargs["eval_accumulation_steps"] == 4
+
+
+def test_build_sft_kwargs_rejects_invalid_eval_accumulation_steps() -> None:
+    """Evaluation accumulation must use a positive number of steps."""
+    with pytest.raises(ValueError, match="eval_accumulation_steps must be positive"):
+        _build_sft_kwargs(
+            {"num_train_epochs": 1, "eval_accumulation_steps": 0}
+        )
 
 
 def test_build_sft_kwargs_omits_prefetch_for_single_process_loading() -> None:
