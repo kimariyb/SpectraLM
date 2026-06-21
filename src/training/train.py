@@ -175,6 +175,7 @@ def main(config: dict[str, Any]) -> None:
         train_dataset=train_ds,
         eval_dataset=eval_ds,
         args=SFTConfig(**sft_kwargs),
+        gradient_checkpointing_kwargs={"use_reentrant": False},
     )
 
     # @title Show current memory stats

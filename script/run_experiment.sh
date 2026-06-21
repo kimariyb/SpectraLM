@@ -31,11 +31,6 @@ if [[ "${stage}" == "list" ]]; then
   exit 0
 fi
 
-if [[ "${CONDA_DEFAULT_ENV:-}" != "ml" ]]; then
-  echo "Activate the ml conda environment before running experiments." >&2
-  exit 2
-fi
-
 case "${stage}:${run_name}" in
   train:scale-5k)
     config="configs/experiments/train_scale_5k.yaml" ;;
