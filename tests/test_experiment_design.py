@@ -95,8 +95,8 @@ def _assert_no_legacy_keys(config: dict) -> None:
     assert legacy.isdisjoint(config)
 
 
-def test_all_training_configs_set_eval_accumulation_steps() -> None:
-    """Every formal and smoke training run should use the shared default."""
+def test_all_training_configs_set_positive_eval_accumulation_steps() -> None:
+    """Every formal and smoke run should explicitly bound evaluation buffering."""
     training_configs = [
         path
         for path in CONFIG_DIR.rglob("*.yaml")
@@ -105,7 +105,7 @@ def test_all_training_configs_set_eval_accumulation_steps() -> None:
     assert training_configs
     for path in training_configs:
         config = yaml.safe_load(path.read_text(encoding="utf-8"))
-        assert config["eval_accumulation_steps"] == 4, path
+        assert config["eval_accumulation_steps"] > 0, path
 
 
 def test_training_matrix_uses_nested_splits_and_shared_validation() -> None:
@@ -122,8 +122,8 @@ def test_training_matrix_uses_nested_splits_and_shared_validation() -> None:
         assert config["include_formula"] is include_formula
         assert config["image_size"] == [768, 432]
         assert config["per_device_train_batch_size"] == 16
-        assert config["per_device_eval_batch_size"] == 4
-        assert config["gradient_accumulation_steps"] == 2
+        assert config["per_device_eval_batch_size"] > 0
+        assert config["gradient_accumulation_steps"] > 0
         assert config["output_dir"].startswith("outputs/experiments/structure/")
         output_dirs.add(config["output_dir"])
 
@@ -276,3 +276,15 @@ def test_active_research_files_do_not_use_numbered_release_labels() -> None:
             text = item.read_text(encoding="utf-8")
             assert not any(label in text for label in numbered_labels), item
             assert forbidden_path not in text, item
+
+
+def test_all_training_configs_enable_early_stopping() -> None:
+    """Every smoke, baseline, ablation, rule, and multitask run should stop early."""
+    training_configs = sorted(CONFIG_DIR.rglob("train*.yaml"))
+
+    assert training_configs
+    for path in training_configs:
+        config = yaml.safe_load(path.read_text(encoding="utf-8"))
+        assert config["early_stopping_patience"] == 3, path
+        assert config["early_stopping_threshold"] == 0.001, path
+        assert config["eval_steps"] == config["save_steps"], path

@@ -36,7 +36,7 @@ dataloader_persistent_workers: true
 dataloader_pin_memory: true
 lora_r: 16
 lora_alpha: 32
-lora_dropout: 0.0
+lora_dropout: 0.05
 num_train_epochs: 1
 max_steps: 20
 learning_rate: 2.0e-4
@@ -49,5 +49,7 @@ fp16: false
 logging_steps: 1
 eval_steps: 10
 save_steps: 10
+early_stopping_patience: 3
+early_stopping_threshold: 0.001
 save_total_limit: 2
 seed: 3407

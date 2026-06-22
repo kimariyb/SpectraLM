@@ -24,6 +24,20 @@ def training_log_dir(config: dict[str, Any]) -> Path:
     return Path(config.get("output_dir", "outputs")) / "logs"
 
 
+def build_early_stopping_kwargs(config: dict[str, Any]) -> dict[str, int | float]:
+    """Build validated arguments for ``EarlyStoppingCallback``."""
+    patience = int(config.get("early_stopping_patience", 3))
+    threshold = float(config.get("early_stopping_threshold", 0.001))
+    if patience <= 0:
+        raise ValueError("early_stopping_patience must be positive")
+    if threshold < 0:
+        raise ValueError("early_stopping_threshold must be non-negative")
+    return {
+        "early_stopping_patience": patience,
+        "early_stopping_threshold": threshold,
+    }
+
+
 def build_sft_kwargs(config: dict[str, Any]) -> dict[str, Any]:
     """Build validated keyword arguments for :class:`trl.SFTConfig`.
 

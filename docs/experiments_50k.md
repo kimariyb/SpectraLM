@@ -80,6 +80,12 @@ CUDA_VISIBLE_DEVICES=0 bash script/run_train_cuda_48g.sh \
 
 ## 5. Training Matrix
 
+All training configurations monitor `eval_loss` with early stopping. Training
+stops after three consecutive evaluations without an improvement of at least
+`0.001`, then restores the checkpoint with the lowest validation loss. The
+patience is counted in evaluation calls, so its step span is
+`3 * eval_steps` for each run.
+
 List all named runs:
 
 ```bash

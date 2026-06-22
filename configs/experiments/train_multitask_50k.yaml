@@ -1,7 +1,7 @@
 # Approved four-task NMR multitask training on one 48GB CUDA GPU.
 
 model_path: /mnt/data/kimariyb/models/Qwen3-VL-8B-Instruct
-max_seq_length: 4096
+max_seq_length: 8192
 load_in_4bit: true
 use_gradient_checkpointing: false
 
@@ -30,26 +30,28 @@ max_eval_samples: 5000
 dry_run: false
 output_dir: outputs/experiments/multitask/multitask-50k-seed3407
 per_device_train_batch_size: 16
-per_device_eval_batch_size: 4
-eval_accumulation_steps: 4
-gradient_accumulation_steps: 2
-dataloader_num_workers: 4
-dataloader_prefetch_factor: 2
+per_device_eval_batch_size: 16
+eval_accumulation_steps: 1
+gradient_accumulation_steps: 4
+dataloader_num_workers: 8
+dataloader_prefetch_factor: 4
 dataloader_persistent_workers: true
 dataloader_pin_memory: true
 lora_r: 16
 lora_alpha: 32
-lora_dropout: 0.0
+lora_dropout: 0.05
 num_train_epochs: 2
-learning_rate: 2.0e-4
+learning_rate: 1.0e-4
 weight_decay: 0.01
-warmup_steps: 100
-lr_scheduler_type: cosine_with_restarts
+warmup_steps: 200
+lr_scheduler_type: cosine
 optim: adamw_8bit
 bf16: true
 fp16: false
 logging_steps: 10
-eval_steps: 500
-save_steps: 500
+eval_steps: 200
+save_steps: 200
+early_stopping_patience: 3
+early_stopping_threshold: 0.001
 save_total_limit: 3
 seed: 3407

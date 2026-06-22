@@ -3,7 +3,7 @@ prompt_template_index: 0
 
 model_path: /mnt/data/kimariyb/models/Qwen3-VL-8B-Instruct
 adapter_path: outputs/experiments/rules/rules-50k-formula-seed3407/best_model
-max_seq_length: 4096
+max_seq_length: 8192
 load_in_4bit: true
 
 dataset_dir: dataset/paired_jsonl_full

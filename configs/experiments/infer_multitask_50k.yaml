@@ -4,7 +4,7 @@ multitask_model: true
 
 model_path: /mnt/data/kimariyb/models/Qwen3-VL-8B-Instruct
 adapter_path: outputs/experiments/multitask/multitask-50k-seed3407/best_model
-max_seq_length: 4096
+max_seq_length: 8192
 load_in_4bit: true
 
 dataset_dir: dataset/paired_jsonl_full

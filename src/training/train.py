@@ -12,6 +12,7 @@ import torch
 from typing import Any
 from pathlib import Path
 from torch.utils.data import Subset
+from transformers import EarlyStoppingCallback
 from unsloth import FastVisionModel
 from unsloth.trainer import UnslothVisionDataCollator
 from src.config import TrainingLoggerCallback, load_config
@@ -19,6 +20,7 @@ from src.logger import TrainingLogger
 from src.data.dataset import load_lazy_nmr_dataset
 from src.data.tasks import normalize_task_weights
 from src.training.arguments import (
+    build_early_stopping_kwargs,
     build_sft_kwargs,
     build_vision_collator_kwargs,
     training_log_dir,
@@ -120,6 +122,7 @@ def main(config: dict[str, Any]) -> None:
     FastVisionModel.for_training(model)
 
     sft_kwargs = build_sft_kwargs(config)
+    early_stopping_kwargs = build_early_stopping_kwargs(config)
     vision_collator_kwargs = build_vision_collator_kwargs(config)
 
     training_logger = TrainingLogger(
@@ -137,6 +140,7 @@ def main(config: dict[str, Any]) -> None:
                 "dataloader_prefetch_factor"
             ),
             "eval_steps": sft_kwargs['eval_steps'],
+            **early_stopping_kwargs,
             "include_formula": config.get("include_formula", True),
             "rule_context_enabled": rule_context_enabled,
             "max_rule_evidence": int(config.get("max_rule_evidence", 12)),
@@ -162,6 +166,13 @@ def main(config: dict[str, Any]) -> None:
         save_every_n_logs=10,
         filename="training_log_live.json",
     )
+    early_stopping_callback = EarlyStoppingCallback(**early_stopping_kwargs)
+
+    print(
+        "Early stopping: "
+        f"patience={early_stopping_kwargs['early_stopping_patience']} evals, "
+        f"threshold={early_stopping_kwargs['early_stopping_threshold']}"
+    )
 
     trainer = SFTTrainer(
         model=model,
@@ -171,7 +182,7 @@ def main(config: dict[str, Any]) -> None:
             tokenizer,
             **vision_collator_kwargs,
         ),
-        callbacks=[logger_callback],
+        callbacks=[logger_callback, early_stopping_callback],
         train_dataset=train_ds,
         eval_dataset=eval_ds,
         args=SFTConfig(**sft_kwargs),

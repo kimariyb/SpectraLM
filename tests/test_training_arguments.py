@@ -97,3 +97,49 @@ def test_training_log_dir_is_isolated_under_each_output_dir() -> None:
     assert resolver({"output_dir": "outputs/experiments/run-a"}) == Path(
         "outputs/experiments/run-a/logs"
     )
+
+
+def test_early_stopping_kwargs_use_configured_patience_and_threshold() -> None:
+    """Early stopping should expose validated Transformers callback arguments."""
+    builder = getattr(
+        _training_arguments_module(),
+        "build_early_stopping_kwargs",
+        None,
+    )
+
+    assert callable(builder)
+    assert builder(
+        {
+            "early_stopping_patience": 3,
+            "early_stopping_threshold": 0.001,
+        }
+    ) == {
+        "early_stopping_patience": 3,
+        "early_stopping_threshold": 0.001,
+    }
+
+
+@pytest.mark.parametrize(
+    ("config", "message"),
+    [
+        ({"early_stopping_patience": 0}, "early_stopping_patience must be positive"),
+        (
+            {"early_stopping_threshold": -0.001},
+            "early_stopping_threshold must be non-negative",
+        ),
+    ],
+)
+def test_early_stopping_kwargs_reject_invalid_values(
+    config: dict,
+    message: str,
+) -> None:
+    """Invalid early-stopping controls should fail before model loading."""
+    builder = getattr(
+        _training_arguments_module(),
+        "build_early_stopping_kwargs",
+        None,
+    )
+
+    assert callable(builder)
+    with pytest.raises(ValueError, match=message):
+        builder(config)
