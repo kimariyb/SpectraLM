@@ -1,4 +1,4 @@
-# Data-scaling and modality-full baseline: 5k samples on one 48GB CUDA GPU.
+# Matched 5k modality ablation: peak tables + formula, without images.
 model_path: /mnt/data/kimariyb/models/Qwen3_5-9B
 max_seq_length: 4096
 load_in_4bit: true
@@ -10,7 +10,7 @@ rendered_image_dir: dataset/paired_jsonl_full/rendered/512x288
 missing_image_policy: error
 train_split_name: clean_5k_train
 eval_split_name: clean_50k_val
-input_mode: full
+input_mode: peak_table_only
 prompt_template_index: 0
 task_weights:
   structure_prediction: 1.0
@@ -22,7 +22,7 @@ image_size: [512, 288]
 max_eval_samples: 5000
 
 dry_run: false
-output_dir: outputs/experiments/structure/scale-5k-formula-seed3407
+output_dir: outputs/experiments/structure/modality-peak-table-only-5k-seed3407
 per_device_train_batch_size: 16
 per_device_eval_batch_size: 16
 eval_accumulation_steps: 1

@@ -18,6 +18,7 @@ from unsloth.trainer import UnslothVisionDataCollator
 from src.config import TrainingLoggerCallback, load_config
 from src.logger import TrainingLogger
 from src.data.dataset import load_lazy_nmr_dataset
+from src.data.modalities import normalize_input_mode
 from src.data.tasks import normalize_task_weights
 from src.training.arguments import (
     build_early_stopping_kwargs,
@@ -51,6 +52,7 @@ def main(config: dict[str, Any]) -> None:
         lazy-JSONL CUDA training path.
     """
     seed: int = config.get("seed", 3407)
+    input_mode = normalize_input_mode(config.get("input_mode", "full"))
     rule_context_enabled = bool(config.get("rule_context_enabled", False))
     task_weights = normalize_task_weights(config.get("task_weights"))
 
@@ -72,6 +74,8 @@ def main(config: dict[str, Any]) -> None:
         "image_backend": config.get("image_backend", "lazy_render"),
         "rendered_image_dir": config.get("rendered_image_dir"),
         "missing_image_policy": config.get("missing_image_policy", "error"),
+        "input_mode": input_mode,
+        "prompt_template_index": config.get("prompt_template_index"),
     }
     train_ds = load_lazy_nmr_dataset(
         dataset_dir,
@@ -167,6 +171,8 @@ def main(config: dict[str, Any]) -> None:
             "eval_steps": sft_kwargs['eval_steps'],
             **early_stopping_kwargs,
             "include_formula": config.get("include_formula", True),
+            "input_mode": input_mode,
+            "prompt_template_index": config.get("prompt_template_index"),
             "rule_context_enabled": rule_context_enabled,
             "max_rule_evidence": int(config.get("max_rule_evidence", 12)),
             "task_weights": task_weights,

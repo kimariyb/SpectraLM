@@ -75,6 +75,36 @@ RULE_INFERENCE_RUNS = {
 MULTITASK_TRAIN_CONFIG = "experiments/train_multitask_50k.yaml"
 MULTITASK_INFERENCE_CONFIG = "experiments/infer_multitask_50k.yaml"
 
+MODALITY_5K_RUNS = {
+    "full": (
+        "experiments/train_scale_5k.yaml",
+        "experiments/infer_scale_5k.yaml",
+    ),
+    "image_only": (
+        "experiments/train_modality_image_only_5k.yaml",
+        "experiments/infer_modality_image_only_5k.yaml",
+    ),
+    "peak_table_only": (
+        "experiments/train_modality_peak_table_only_5k.yaml",
+        "experiments/infer_modality_peak_table_only_5k.yaml",
+    ),
+    "formula_only": (
+        "experiments/train_modality_formula_only_5k.yaml",
+        "experiments/infer_modality_formula_only_5k.yaml",
+    ),
+}
+
+MODALITY_50K_RUNS = {
+    "image_only": (
+        "experiments/train_modality_image_only_50k.yaml",
+        "experiments/infer_modality_image_only_50k.yaml",
+    ),
+    "peak_table_only": (
+        "experiments/train_modality_peak_table_only_50k.yaml",
+        "experiments/infer_modality_peak_table_only_50k.yaml",
+    ),
+}
+
 
 def test_train_imports_unsloth_before_the_cuda_training_stack() -> None:
     """Unsloth must patch the training stack before Torch/Transformers imports."""
@@ -125,6 +155,33 @@ def test_all_training_configs_set_positive_eval_accumulation_steps() -> None:
         assert config["eval_accumulation_steps"] > 0, path
 
 
+def test_all_active_configs_use_the_current_input_protocol() -> None:
+    """No retained run should silently use the superseded render protocol."""
+    for path in CONFIG_DIR.rglob("*.yaml"):
+        config = yaml.safe_load(path.read_text(encoding="utf-8"))
+        assert config["input_mode"] in {
+            "full",
+            "image_only",
+            "peak_table_only",
+            "formula_only",
+        }, path
+        assert config["image_size"] == [512, 288], path
+        assert config["c_snr"] == 200.0, path
+        assert config["prompt_template_index"] == 0, path
+        if path.name.startswith("train_"):
+            assert config["lora_dropout"] == 0.0, path
+
+
+def test_redundant_yaml_configs_are_removed() -> None:
+    """One condition should have one canonical configuration file."""
+    removed = {
+        "experiments/train_modality_full_5k.yaml",
+        "experiments/infer_modality_full_5k.yaml",
+        "experiments/infer_modality_full_50k.yaml",
+    }
+    assert all(not (CONFIG_DIR / name).exists() for name in removed)
+
+
 def test_training_matrix_uses_nested_splits_and_shared_validation() -> None:
     """All runs should implement the approved scaling and seed design."""
     output_dirs: set[str] = set()
@@ -137,7 +194,9 @@ def test_training_matrix_uses_nested_splits_and_shared_validation() -> None:
         assert config["num_train_epochs"] == 2
         assert config["seed"] == seed
         assert config["include_formula"] is include_formula
-        assert config["image_size"] == [768, 432]
+        width, height = config["image_size"]
+        assert width > 0 and height > 0
+        assert config["rendered_image_dir"].endswith(f"{width}x{height}")
         assert config["per_device_train_batch_size"] == 16
         assert config["per_device_eval_batch_size"] > 0
         assert config["gradient_accumulation_steps"] > 0
@@ -158,7 +217,7 @@ def test_inference_matrix_uses_one_shared_scaffold_disjoint_test() -> None:
         assert config.get("adapter_path") == adapter_path
         assert config["include_formula"] is include_formula
         assert config["prompt_template_index"] == 0
-        assert config["image_size"] == [768, 432]
+        assert config["image_size"] == [512, 288]
         assert config["output"].startswith(
             "outputs/experiments/structure/predictions/"
         )
@@ -252,6 +311,103 @@ def test_multitask_run_uses_isolated_protocol_and_candidate_sidecars() -> None:
     )
 
 
+def test_modality_5k_matrix_holds_all_non_modality_controls_fixed() -> None:
+    """The four 5k conditions should differ only in exposed input evidence."""
+    train_configs = {
+        mode: _read_yaml(paths[0]) for mode, paths in MODALITY_5K_RUNS.items()
+    }
+    inference_configs = {
+        mode: _read_yaml(paths[1]) for mode, paths in MODALITY_5K_RUNS.items()
+    }
+    controlled_train_keys = (
+        "model_path",
+        "max_seq_length",
+        "train_split_name",
+        "eval_split_name",
+        "max_eval_samples",
+        "include_formula",
+        "image_size",
+        "per_device_train_batch_size",
+        "per_device_eval_batch_size",
+        "gradient_accumulation_steps",
+        "num_train_epochs",
+        "learning_rate",
+        "warmup_steps",
+        "eval_steps",
+        "save_steps",
+        "seed",
+        "prompt_template_index",
+    )
+    full_train = train_configs["full"]
+    for mode, config in train_configs.items():
+        assert config["input_mode"] == mode
+        assert config["task_weights"] == {"structure_prediction": 1.0}
+        assert all(config[key] == full_train[key] for key in controlled_train_keys)
+        assert config["train_split_name"] == "clean_5k_train"
+        assert config["output_dir"].startswith("outputs/experiments/structure/")
+
+    full_inference = inference_configs["full"]
+    for mode, config in inference_configs.items():
+        assert config["input_mode"] == mode
+        assert config["split"] == "clean_50k_test"
+        assert config["max_samples"] == 5000
+        for key in (
+            "model_path",
+            "max_seq_length",
+            "split",
+            "max_samples",
+            "include_formula",
+            "prompt_template_index",
+            "temperature",
+            "top_p",
+            "seed",
+        ):
+            assert config[key] == full_inference[key]
+
+
+def test_modality_50k_runs_match_current_main_training_controls() -> None:
+    """Large modality ablations should match the active 50k full baseline."""
+    baseline = _read_yaml("train_cuda_48g_jsonl.yaml")
+    controlled_keys = (
+        "model_path",
+        "max_seq_length",
+        "train_split_name",
+        "eval_split_name",
+        "max_eval_samples",
+        "include_formula",
+        "h_snr",
+        "c_snr",
+        "render_seed",
+        "image_size",
+        "per_device_train_batch_size",
+        "per_device_eval_batch_size",
+        "gradient_accumulation_steps",
+        "lora_r",
+        "lora_alpha",
+        "lora_dropout",
+        "num_train_epochs",
+        "learning_rate",
+        "weight_decay",
+        "warmup_steps",
+        "lr_scheduler_type",
+        "eval_steps",
+        "save_steps",
+        "early_stopping_patience",
+        "early_stopping_threshold",
+        "prompt_template_index",
+        "task_weights",
+        "seed",
+    )
+    for mode, (train_name, infer_name) in MODALITY_50K_RUNS.items():
+        train = _read_yaml(train_name)
+        inference = _read_yaml(infer_name)
+        assert train["input_mode"] == mode
+        assert all(train[key] == baseline[key] for key in controlled_keys)
+        assert inference["input_mode"] == mode
+        assert inference["adapter_path"] == f"{train['output_dir']}/best_model"
+        assert inference["image_size"] == train["image_size"]
+
+
 def test_experiment_runner_lists_all_named_runs() -> None:
     """One entrypoint should expose every training and inference run."""
     script = Path(__file__).parents[1] / "script" / "run_experiment.sh"
@@ -276,6 +432,11 @@ def test_experiment_runner_lists_all_named_runs() -> None:
         "rules-no-formula",
         "multitask-50k",
         "zero-shot",
+        "modality-image-only-5k",
+        "modality-peak-table-only-5k",
+        "modality-formula-only-5k",
+        "modality-image-only-50k",
+        "modality-peak-table-only-50k",
     ]:
         assert run_name in result.stdout
 

@@ -2,10 +2,17 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 from pathlib import Path
 
 from script.pre_render_jsonl_images import pre_render_images
+
+
+def test_pre_render_default_matches_current_training_protocol() -> None:
+    """CLI and Python defaults should target the active image resolution."""
+    default = inspect.signature(pre_render_images).parameters["image_size"].default
+    assert default == (512, 288)
 
 
 def test_pre_render_images_writes_pngs_and_manifest(

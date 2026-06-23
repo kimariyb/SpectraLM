@@ -1,7 +1,8 @@
 # Formula-free ablation evaluated with images and peak tables unchanged.
 prompt_template_index: 0
+input_mode: full
 
-model_path: /mnt/data/kimariyb/models/Qwen3-VL-8B-Instruct
+model_path: /mnt/data/kimariyb/models/Qwen3_5-9B
 adapter_path: outputs/experiments/structure/no-formula-50k-seed3407/best_model
 max_seq_length: 4096
 load_in_4bit: true
@@ -9,11 +10,11 @@ load_in_4bit: true
 dataset_dir: dataset/paired_jsonl_full
 split: clean_50k_test
 image_backend: pre_rendered
-rendered_image_dir: dataset/paired_jsonl_full/rendered/768x432
+rendered_image_dir: dataset/paired_jsonl_full/rendered/512x288
 missing_image_policy: error
-image_size: [768, 432]
+image_size: [512, 288]
 h_snr: 500.0
-c_snr: 300.0
+c_snr: 200.0
 render_seed: 3407
 include_formula: false
 max_samples: 5000

@@ -4,6 +4,15 @@ from __future__ import annotations
 
 from typing import Any
 
+from src.data.modalities import (
+    FORMULA_ONLY,
+    FULL,
+    IMAGE_ONLY,
+    PEAK_TABLE_ONLY,
+    input_mode_uses_peak_tables,
+    normalize_input_mode,
+    validate_input_configuration,
+)
 from src.nmr_rules.engine import analyze_sample
 
 
@@ -75,16 +84,56 @@ STRUCTURE_PROMPTS: list[str] = [
     ),
 ]
 
+MODALITY_STRUCTURE_PROMPTS: dict[str, list[str]] = {
+    FULL: STRUCTURE_PROMPTS,
+    IMAGE_ONLY: [
+        (
+            "The input contains two one-dimensional NMR spectrum images in a "
+            "fixed order: the first image is the 1H NMR spectrum, and the "
+            "second image is the 13C NMR spectrum. Infer the molecular "
+            "structure from the visual spectra and the molecular formula when "
+            "provided. No numerical peak tables are available.\n\n"
+            "{peak_tables}\n\nOutput exactly one canonical SMILES string only."
+        )
+    ],
+    PEAK_TABLE_ONLY: [
+        (
+            "Infer the molecular structure from the tabulated one-dimensional "
+            "1H and 13C NMR measurements and the molecular formula when "
+            "provided. No spectrum images are available.\n\n{peak_tables}\n\n"
+            "Output exactly one canonical SMILES string only."
+        )
+    ],
+    FORMULA_ONLY: [
+        (
+            "Only the molecular formula below is provided. Predict the most "
+            "likely molecular structure using this molecular prior alone; no "
+            "NMR spectrum images or peak measurements are available.\n\n"
+            "{peak_tables}\n\nOutput exactly one canonical SMILES string only."
+        )
+    ],
+}
 
-def select_structure_prompt(prompt_template_index: int) -> str:
+
+def structure_prompts_for_mode(input_mode: str | None = FULL) -> list[str]:
+    """Return structure-prediction templates for one input mode."""
+    return MODALITY_STRUCTURE_PROMPTS[normalize_input_mode(input_mode)]
+
+
+def select_structure_prompt(
+    prompt_template_index: int,
+    *,
+    input_mode: str | None = FULL,
+) -> str:
     """Return one stable inference prompt by explicit template index."""
+    prompts = structure_prompts_for_mode(input_mode)
     index = int(prompt_template_index)
-    if index < 0 or index >= len(STRUCTURE_PROMPTS):
+    if index < 0 or index >= len(prompts):
         raise ValueError(
             "prompt_template_index must be between 0 and "
-            f"{len(STRUCTURE_PROMPTS) - 1}, got {index}"
+            f"{len(prompts) - 1}, got {index}"
         )
-    return STRUCTURE_PROMPTS[index]
+    return prompts[index]
 
 
 def build_structure_prompt(
@@ -94,6 +143,7 @@ def build_structure_prompt(
     include_formula: bool = True,
     include_rule_context: bool = False,
     max_rule_evidence: int = 12,
+    input_mode: str | None = FULL,
 ) -> str:
     """Fill one structure prompt with peak tables and optional rule evidence.
 
@@ -116,19 +166,30 @@ def build_structure_prompt(
     str
         Model-ready structure-prediction prompt.
     """
+    mode = validate_input_configuration(
+        input_mode,
+        include_formula=include_formula,
+        include_rule_context=include_rule_context,
+    )
     formula_value = sample.get("molecular_formula") if include_formula else None
     formula = str(formula_value).strip() if formula_value else None
-    peak_tables = _format_peak_tables(
-        sample,
-        formula,
-    )
+    if mode == FORMULA_ONLY and formula is None:
+        raise ValueError("formula_only input_mode requires a molecular formula")
+
+    context: list[str] = []
+    if formula is not None:
+        context.append(f"Molecular formula: {formula}")
+    if input_mode_uses_peak_tables(mode):
+        context.append(_format_peak_tables(sample))
     if include_rule_context:
-        peak_tables += "\n\n" + _format_rule_context(
-            sample,
-            include_formula=include_formula,
-            max_rule_evidence=max_rule_evidence,
+        context.append(
+            _format_rule_context(
+                sample,
+                include_formula=include_formula,
+                max_rule_evidence=max_rule_evidence,
+            )
         )
-    return prompt.format(peak_tables=peak_tables)
+    return prompt.format(peak_tables="\n\n".join(context))
 
 
 def _format_rule_context(
@@ -164,14 +225,11 @@ def _format_rule_context(
     return "\n".join(lines)
 
 
-def _format_peak_tables(sample: dict[str, Any], formula: str | None) -> str:
+def _format_peak_tables(sample: dict[str, Any]) -> str:
     """Build formatted proton and carbon peak tables."""
     parts: list[str] = []
-    if formula is not None:
-        parts.append(f"Molecular formula: {formula}")
-
     h_nmr = sample.get("1H_NMR", {})
-    parts.append("\n## 1H NMR Peak Table")
+    parts.append("## 1H NMR Peak Table")
     parts.append(
         f"  Solvent: {h_nmr.get('solvent', 'unknown')}  |  "
         f"Frequency: {h_nmr.get('frequency', 'unknown')}"

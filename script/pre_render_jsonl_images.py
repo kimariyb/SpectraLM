@@ -88,7 +88,7 @@ def pre_render_images(
     out_dir: str | Path,
     *,
     splits: list[str],
-    image_size: tuple[int, int] | None = (768, 432),
+    image_size: tuple[int, int] | None = (512, 288),
     h_snr: float = 500.0,
     c_snr: float = 300.0,
     render_seed: int | None = 3407,
@@ -196,7 +196,7 @@ def main() -> None:
     parser.add_argument("dataset_dir")
     parser.add_argument("--out-dir", default=None)
     parser.add_argument("--splits", nargs="+", required=True)
-    parser.add_argument("--image-size", nargs=2, type=int, default=[768, 432])
+    parser.add_argument("--image-size", nargs=2, type=int, default=[512, 288])
     parser.add_argument("--h-snr", type=float, default=500.0)
     parser.add_argument("--c-snr", type=float, default=300.0)
     parser.add_argument("--render-seed", type=int, default=3407)

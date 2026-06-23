@@ -10,7 +10,7 @@ The repository has one supported research workflow:
 
 1. Build a paired, scaffold-disjoint JSONL dataset from the raw CSV.
 2. Curate nested 5k, 10k, 25k, and 50k training subsets.
-3. Pre-render `768 x 432` spectrum images.
+3. Pre-render `512 x 288` spectrum images.
 4. Build formula-matched candidates for the ranking auxiliary task.
 5. Train and evaluate structure, rule-context, and multitask experiments.
 
@@ -29,7 +29,7 @@ bash script/build_full_jsonl.sh \
 
 python script/pre_render_jsonl_images.py dataset/paired_jsonl_full \
   --splits clean_50k_train clean_50k_val clean_50k_test \
-  --image-size 768 432 \
+  --image-size 512 288 \
   --num-workers 32
 
 CUDA_VISIBLE_DEVICES=0 bash script/run_train_cuda_48g.sh \

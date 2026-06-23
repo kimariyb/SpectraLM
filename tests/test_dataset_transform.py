@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 from PIL import Image as PILImage
+import pytest
 
 import src.data.dataset as dataset_module
 from src.data.dataset import (
@@ -154,6 +155,51 @@ def test_message_transform_can_omit_formula(ethanol_sample) -> None:
     assert "Molecular formula:" not in prompt
 
 
+@pytest.mark.parametrize(
+    ("input_mode", "content_types"),
+    [
+        ("full", ["image", "image", "text"]),
+        ("image_only", ["image", "image", "text"]),
+        ("peak_table_only", ["text"]),
+        ("formula_only", ["text"]),
+    ],
+)
+def test_message_transform_emits_only_selected_modalities(
+    ethanol_sample,
+    input_mode: str,
+    content_types: list[str],
+) -> None:
+    """Training messages should physically omit ablated image inputs."""
+    transform = NMRMessageTransform(
+        seed=1,
+        input_mode=input_mode,
+        prompt_template_index=0,
+    )
+    output = transform(
+        {
+            "h_image": [PILImage.new("RGB", (32, 18))],
+            "c_image": [PILImage.new("RGB", (32, 18))],
+            "sample": [ethanol_sample],
+        }
+    )
+
+    content = output["messages"][0][0]["content"]
+    assert [item["type"] for item in content] == content_types
+    prompt = content[-1]["text"]
+    assert ("## 1H NMR Peak Table" in prompt) is (
+        input_mode in {"full", "peak_table_only"}
+    )
+
+
+def test_non_full_modality_rejects_auxiliary_task_mixture() -> None:
+    """Auxiliary prompts are currently defined only for the full input."""
+    with pytest.raises(ValueError, match="structure_prediction"):
+        NMRMessageTransform(
+            input_mode="image_only",
+            task_weights={"functional_group_recognition": 1.0},
+        )
+
+
 def test_message_transform_can_add_formula_free_rule_context(ethanol_sample) -> None:
     """Training messages should propagate the opt-in rule-context setting."""
     transform = NMRMessageTransform(
@@ -285,6 +331,29 @@ def test_load_lazy_nmr_dataset_from_jsonl_directory(tmp_path: Path, ethanol_samp
     assert [message["role"] for message in row["messages"]] == ["user", "assistant"]
     assert row["messages"][0]["content"][0]["image"].size == (64, 64)
     assert row["messages"][1]["content"][0]["text"] == "CCO"
+
+
+def test_text_only_lazy_dataset_does_not_require_or_load_images(
+    tmp_path: Path,
+    ethanol_sample,
+) -> None:
+    """Peak-table ablation should work without a rendered-image directory."""
+    _write_lazy_jsonl_fixture(tmp_path, ethanol_sample)
+
+    dataset = load_lazy_nmr_dataset(
+        tmp_path,
+        split="train",
+        input_mode="peak_table_only",
+        prompt_template_index=0,
+        image_backend="pre_rendered",
+        rendered_image_dir=None,
+    )
+    row = dataset[0]
+
+    assert [
+        item["type"] for item in row["messages"][0]["content"]
+    ] == ["text"]
+    assert "## 1H NMR Peak Table" in row["messages"][0]["content"][0]["text"]
 
 
 def test_lazy_dataset_loads_candidate_sidecar_for_ranking(

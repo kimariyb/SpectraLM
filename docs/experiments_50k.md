@@ -78,7 +78,7 @@ covers the full experiment matrix.
 ```bash
 python script/pre_render_jsonl_images.py dataset/paired_jsonl_full \
   --splits clean_50k_train clean_50k_val clean_50k_test \
-  --image-size 768 432 \
+  --image-size 512 288 \
   --num-workers 32 \
   --overwrite
 ```
@@ -108,32 +108,47 @@ List all named runs:
 bash script/run_experiment.sh list
 ```
 
-Run the two core comparisons first:
+First establish the zero-shot baseline; this does not train a model:
 
 ```bash
+CUDA_VISIBLE_DEVICES=0 bash script/run_experiment.sh infer zero-shot
+```
+
+Then run the matched 5k modality screen. `scale-5k` is the full
+image-plus-peak-table condition and must not be trained a second time under a
+different name:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 bash script/run_experiment.sh train scale-5k
+CUDA_VISIBLE_DEVICES=1 bash script/run_experiment.sh train modality-image-only-5k
+CUDA_VISIBLE_DEVICES=0 bash script/run_experiment.sh train modality-peak-table-only-5k
+CUDA_VISIBLE_DEVICES=1 bash script/run_experiment.sh train modality-formula-only-5k
+```
+
+Evaluate all four before approving larger modality runs:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 bash script/run_experiment.sh infer scale-5k
+CUDA_VISIBLE_DEVICES=0 bash script/run_experiment.sh infer modality-image-only-5k
+CUDA_VISIBLE_DEVICES=0 bash script/run_experiment.sh infer modality-peak-table-only-5k
+CUDA_VISIBLE_DEVICES=0 bash script/run_experiment.sh infer modality-formula-only-5k
+```
+
+After the 5k gate, complete the data-scaling curve and core formula ablation:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 bash script/run_experiment.sh train scale-10k
+CUDA_VISIBLE_DEVICES=1 bash script/run_experiment.sh train scale-25k
 CUDA_VISIBLE_DEVICES=0 bash script/run_experiment.sh train main-3407
 CUDA_VISIBLE_DEVICES=1 bash script/run_experiment.sh train no-formula
 ```
 
-Run the matched rule-context comparisons after the baselines:
+If the 5k results show a meaningful modality effect, run the two 50k
+extensions. `main-3407` is the corresponding 50k full condition:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 bash script/run_experiment.sh train rules-50k
-CUDA_VISIBLE_DEVICES=1 bash script/run_experiment.sh train rules-no-formula
-```
-
-Run the approved single-model multitask experiment separately:
-
-```bash
-CUDA_VISIBLE_DEVICES=0 bash script/run_experiment.sh train multitask-50k
-```
-
-Run the data-scaling curve:
-
-```bash
-CUDA_VISIBLE_DEVICES=0 bash script/run_experiment.sh train scale-5k
-CUDA_VISIBLE_DEVICES=1 bash script/run_experiment.sh train scale-10k
-CUDA_VISIBLE_DEVICES=0 bash script/run_experiment.sh train scale-25k
+CUDA_VISIBLE_DEVICES=0 bash script/run_experiment.sh train modality-image-only-50k
+CUDA_VISIBLE_DEVICES=1 bash script/run_experiment.sh train modality-peak-table-only-50k
 ```
 
 Run the remaining 50k seeds:
@@ -141,6 +156,15 @@ Run the remaining 50k seeds:
 ```bash
 CUDA_VISIBLE_DEVICES=0 bash script/run_experiment.sh train main-42
 CUDA_VISIBLE_DEVICES=1 bash script/run_experiment.sh train main-2026
+```
+
+Run rule-context and multitask experiments only after the core structure study
+is complete:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 bash script/run_experiment.sh train rules-50k
+CUDA_VISIBLE_DEVICES=1 bash script/run_experiment.sh train rules-no-formula
+CUDA_VISIBLE_DEVICES=0 bash script/run_experiment.sh train multitask-50k
 ```
 
 Each command is blocking. Use separate terminal sessions when assigning two
@@ -153,8 +177,6 @@ Every inference run uses greedy decoding, the same prompt seed, and
 removes the molecular formula.
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 bash script/run_experiment.sh infer zero-shot
-CUDA_VISIBLE_DEVICES=0 bash script/run_experiment.sh infer scale-5k
 CUDA_VISIBLE_DEVICES=0 bash script/run_experiment.sh infer scale-10k
 CUDA_VISIBLE_DEVICES=0 bash script/run_experiment.sh infer scale-25k
 CUDA_VISIBLE_DEVICES=0 bash script/run_experiment.sh infer main-3407
@@ -164,6 +186,8 @@ CUDA_VISIBLE_DEVICES=0 bash script/run_experiment.sh infer no-formula
 CUDA_VISIBLE_DEVICES=0 bash script/run_experiment.sh infer rules-50k
 CUDA_VISIBLE_DEVICES=0 bash script/run_experiment.sh infer rules-no-formula
 CUDA_VISIBLE_DEVICES=0 bash script/run_experiment.sh infer multitask-50k
+CUDA_VISIBLE_DEVICES=0 bash script/run_experiment.sh infer modality-image-only-50k
+CUDA_VISIBLE_DEVICES=0 bash script/run_experiment.sh infer modality-peak-table-only-50k
 ```
 
 Predictions are written under `outputs/experiments/structure/`,
@@ -175,8 +199,9 @@ has a sibling `*.summary.json` containing the metrics defined below.
 - `exact_match` compares stereochemistry-aware RDKit canonical SMILES.
 - `connectivity_exact_match` canonicalizes with stereochemistry disabled.
 - `valid_smiles_rate` measures whether a SMILES candidate can be extracted and
-  parsed by RDKit. `domain_valid_smiles_rate` additionally requires one neutral
-  component containing only `H C N O F Si P S Cl Br I`.
+  parsed by RDKit. `domain_valid_smiles_rate` additionally requires one
+  net-neutral, non-radical, isotope-free component containing only
+  `H C N O F Si P S Cl Br I`.
 - `molecular_formula_accuracy` compares formulas calculated by RDKit from the
   predicted and reference structures.
 - Morgan-fingerprint Tanimoto uses radius 2, 2,048 bits, and no chirality. The
@@ -203,3 +228,7 @@ has a sibling `*.summary.json` containing the metrics defined below.
 Report the zero-shot, 5k, 10k, 25k, and 50k seed-3407 results as the data
 scaling curve. Report mean and standard deviation across the three 50k seeds.
 Use the seed-3407 formula and no-formula runs for the controlled ablation.
+For modality ablations, report paired per-sample differences against `full`,
+bootstrap confidence intervals for Exact Match and Tanimoto, and a McNemar test
+for paired Exact Match outcomes. Treat `formula_only` as a molecular-prior and
+dataset-bias control rather than an NMR model.

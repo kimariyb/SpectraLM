@@ -14,13 +14,22 @@ from PIL import Image as PILImage
 from PIL.Image import Resampling
 from torch.utils.data import Dataset
 
+from src.data.modalities import (
+    FULL,
+    build_user_content,
+    input_mode_uses_images,
+    validate_input_configuration,
+)
 from src.data.tasks import (
     CANDIDATE_RANKING,
     STRUCTURE_PREDICTION,
     build_task_example,
     normalize_task_weights,
 )
-from src.evaluation.prompts import STRUCTURE_PROMPTS
+from src.evaluation.prompts import (
+    select_structure_prompt,
+    structure_prompts_for_mode,
+)
 from src.spectra.render import carbon_to_spectra, hydrogen_to_spectra
 
 
@@ -134,21 +143,48 @@ class NMRMessageTransform:
         max_rule_evidence: int = 12,
         task_weights: Mapping[str, float] | None = None,
         candidate_map: Mapping[str, Sequence[str]] | None = None,
+        input_mode: str = FULL,
+        prompt_template_index: int | None = None,
     ) -> None:
         self.rng = np.random.default_rng(seed)
         self.include_formula = bool(include_formula)
         self.include_rule_context = bool(include_rule_context)
         self.max_rule_evidence = int(max_rule_evidence)
         self.task_weights = normalize_task_weights(task_weights)
+        self.input_mode = validate_input_configuration(
+            input_mode,
+            include_formula=self.include_formula,
+            include_rule_context=self.include_rule_context,
+            task_names=self.task_weights,
+        )
+        self.prompt_template_index = (
+            None
+            if prompt_template_index is None
+            else int(prompt_template_index)
+        )
+        if self.prompt_template_index is not None:
+            select_structure_prompt(
+                self.prompt_template_index,
+                input_mode=self.input_mode,
+            )
         self.task_names = tuple(self.task_weights)
         self.task_probabilities = tuple(self.task_weights.values())
         self.candidate_map = dict(candidate_map or {})
 
     def __call__(self, batch: dict[str, Any]) -> dict[str, list[Any]]:
         """Build image-plus-table prompts and task-specific targets."""
-        h_images = self._as_list(batch["h_image"])
-        c_images = self._as_list(batch["c_image"])
         samples = self._as_list(batch["sample"])
+        uses_images = input_mode_uses_images(self.input_mode)
+        h_images = (
+            self._as_list(batch["h_image"])
+            if uses_images
+            else [None] * len(samples)
+        )
+        c_images = (
+            self._as_list(batch["c_image"])
+            if uses_images
+            else [None] * len(samples)
+        )
         messages_batch: list[list[dict[str, Any]]] = []
 
         for h_image, c_image, sample in zip(h_images, c_images, samples):
@@ -162,24 +198,36 @@ class NMRMessageTransform:
             candidates = self.candidate_map.get(sample_id)
             if task == CANDIDATE_RANKING and not candidates:
                 task = STRUCTURE_PREDICTION
+            if self.prompt_template_index is None:
+                prompt = str(
+                    self.rng.choice(
+                        structure_prompts_for_mode(self.input_mode)
+                    )
+                )
+            else:
+                prompt = select_structure_prompt(
+                    self.prompt_template_index,
+                    input_mode=self.input_mode,
+                )
             example = build_task_example(
                 sample,
                 task,
                 candidates=candidates,
-                structure_prompt=str(self.rng.choice(STRUCTURE_PROMPTS)),
+                structure_prompt=prompt,
                 include_formula=self.include_formula,
                 include_rule_context=self.include_rule_context,
                 max_rule_evidence=self.max_rule_evidence,
+                input_mode=self.input_mode,
             )
             messages_batch.append(
                 [
                     {
                         "role": "user",
-                        "content": [
-                            {"type": "image", "image": h_image},
-                            {"type": "image", "image": c_image},
-                            {"type": "text", "text": example.prompt},
-                        ],
+                        "content": build_user_content(
+                            example.prompt,
+                            input_mode=self.input_mode,
+                            images=(h_image, c_image) if uses_images else (),
+                        ),
                     },
                     {
                         "role": "assistant",
@@ -314,6 +362,8 @@ class LazyNMRJsonlDataset(Dataset):
         image_backend: str = "lazy_render",
         rendered_image_dir: str | Path | None = None,
         missing_image_policy: str = "error",
+        input_mode: str = FULL,
+        prompt_template_index: int | None = None,
     ) -> None:
         self.dataset_dir = Path(dataset_dir)
         self.jsonl_path = self.dataset_dir / "samples.jsonl"
@@ -325,7 +375,18 @@ class LazyNMRJsonlDataset(Dataset):
             raise ValueError(
                 f"Unsupported missing_image_policy: {missing_image_policy!r}"
             )
-        if image_backend == "pre_rendered" and rendered_image_dir is None:
+        self.input_mode = validate_input_configuration(
+            input_mode,
+            include_formula=bool(include_formula),
+            include_rule_context=bool(include_rule_context),
+            task_names=normalize_task_weights(task_weights),
+        )
+        self.uses_images = input_mode_uses_images(self.input_mode)
+        if (
+            self.uses_images
+            and image_backend == "pre_rendered"
+            and rendered_image_dir is None
+        ):
             raise ValueError(
                 "rendered_image_dir is required when image_backend='pre_rendered'."
             )
@@ -348,6 +409,8 @@ class LazyNMRJsonlDataset(Dataset):
             include_rule_context=include_rule_context,
             max_rule_evidence=max_rule_evidence,
             task_weights=task_weights,
+            input_mode=self.input_mode,
+            prompt_template_index=prompt_template_index,
             candidate_map=(
                 load_candidate_map(candidate_sidecar_path)
                 if candidate_sidecar_path is not None
@@ -527,23 +590,21 @@ class LazyNMRJsonlDataset(Dataset):
     def __getitem__(self, idx: int) -> dict[str, Any]:
         """Return one multimodal NMR supervision instruction."""
         sample = self._load_sample_at(self.offsets[idx])
-        h_image, c_image = load_sample_images(
-            sample,
-            image_backend=self.image_backend,
-            rendered_image_dir=self.rendered_image_dir,
-            missing_image_policy=self.missing_image_policy,
-            h_snr=self.h_snr,
-            c_snr=self.c_snr,
-            render_seed=self.render_seed,
-            image_size=self.image_size,
-        )
-        transformed = self.transform(
-            {
-                "h_image": [h_image],
-                "c_image": [c_image],
-                "sample": [sample],
-            }
-        )
+        batch: dict[str, list[Any]] = {"sample": [sample]}
+        if self.uses_images:
+            h_image, c_image = load_sample_images(
+                sample,
+                image_backend=self.image_backend,
+                rendered_image_dir=self.rendered_image_dir,
+                missing_image_policy=self.missing_image_policy,
+                h_snr=self.h_snr,
+                c_snr=self.c_snr,
+                render_seed=self.render_seed,
+                image_size=self.image_size,
+            )
+            batch["h_image"] = [h_image]
+            batch["c_image"] = [c_image]
+        transformed = self.transform(batch)
         return {"messages": transformed["messages"][0]}
 
 
@@ -564,6 +625,8 @@ def load_lazy_nmr_dataset(
     image_backend: str = "lazy_render",
     rendered_image_dir: str | Path | None = None,
     missing_image_policy: str = "error",
+    input_mode: str = FULL,
+    prompt_template_index: int | None = None,
 ) -> LazyNMRJsonlDataset:
     """Create the active lazy JSONL training dataset."""
     return LazyNMRJsonlDataset(
@@ -582,6 +645,8 @@ def load_lazy_nmr_dataset(
         image_backend=image_backend,
         rendered_image_dir=rendered_image_dir,
         missing_image_policy=missing_image_policy,
+        input_mode=input_mode,
+        prompt_template_index=prompt_template_index,
     )
 
 

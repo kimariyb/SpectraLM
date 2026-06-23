@@ -1,7 +1,8 @@
 """Build formula-matched hard candidate sets for NMR ranking supervision."""
 
 from __future__ import annotations
-
+import os
+import sys
 import argparse
 from collections import defaultdict
 import hashlib
@@ -12,6 +13,9 @@ from typing import Any
 
 from rdkit import Chem, DataStructs
 from rdkit.Chem import rdFingerprintGenerator
+
+# Allow running from project root without PYTHONPATH.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.data.molecules import canonicalize_smiles, molecule_formula
 

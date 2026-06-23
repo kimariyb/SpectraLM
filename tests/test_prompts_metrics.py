@@ -39,6 +39,68 @@ def test_inference_selects_current_prompt_by_explicit_index() -> None:
         select_structure_prompt(len(STRUCTURE_PROMPTS))
 
 
+@pytest.mark.parametrize(
+    ("input_mode", "has_images", "has_peak_tables"),
+    [
+        ("full", True, True),
+        ("image_only", True, False),
+        ("peak_table_only", False, True),
+        ("formula_only", False, False),
+    ],
+)
+def test_structure_prompts_expose_only_the_selected_input_modalities(
+    ethanol_sample,
+    input_mode: str,
+    has_images: bool,
+    has_peak_tables: bool,
+) -> None:
+    """Each ablation prompt must describe and include exactly its inputs."""
+    template = select_structure_prompt(0, input_mode=input_mode)
+    prompt = build_structure_prompt(
+        ethanol_sample,
+        template,
+        include_formula=True,
+        input_mode=input_mode,
+    )
+    normalized = " ".join(prompt.lower().split())
+
+    assert ("first image" in normalized) is has_images
+    assert ("## 1h nmr peak table" in prompt.lower()) is has_peak_tables
+    assert ("## 13c nmr peak table" in prompt.lower()) is has_peak_tables
+    assert "Molecular formula: C2H6O" in prompt
+
+
+@pytest.mark.parametrize("input_mode", ["image_only", "peak_table_only", "formula_only"])
+def test_non_full_modalities_reject_rule_context(
+    ethanol_sample,
+    input_mode: str,
+) -> None:
+    """Derived rules must not leak omitted spectral evidence into ablations."""
+    template = select_structure_prompt(0, input_mode=input_mode)
+
+    with pytest.raises(ValueError, match="rule context"):
+        build_structure_prompt(
+            ethanol_sample,
+            template,
+            include_formula=True,
+            include_rule_context=True,
+            input_mode=input_mode,
+        )
+
+
+def test_formula_only_requires_an_explicit_formula(ethanol_sample) -> None:
+    """The prior-only control cannot be constructed with an empty input."""
+    template = select_structure_prompt(0, input_mode="formula_only")
+
+    with pytest.raises(ValueError, match="requires include_formula"):
+        build_structure_prompt(
+            ethanol_sample,
+            template,
+            include_formula=False,
+            input_mode="formula_only",
+        )
+
+
 def test_structure_prompt_can_omit_formula_for_ablation(ethanol_sample) -> None:
     """Formula-free ablations should not leak formula from labels."""
     prompt = build_structure_prompt(

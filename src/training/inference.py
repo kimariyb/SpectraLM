@@ -29,6 +29,11 @@ from src.data.dataset import (
     load_sample_images,
     load_raw_nmr_samples,
 )
+from src.data.modalities import (
+    build_user_content,
+    input_mode_uses_images,
+    validate_input_configuration,
+)
 from src.evaluation.metrics import (
     evaluate_structure_prediction,
     inspect_generation_tokens,
@@ -105,6 +110,7 @@ def generate_one(
     max_new_tokens: int = 256,
     temperature: float = 0.0,
     top_p: float = 1.0,
+    input_mode: str = "full",
 ) -> tuple[str, dict[str, int | bool]]:
     """Generate one prediction from paired NMR spectrum images.
 
@@ -130,14 +136,12 @@ def generate_one(
     tuple[str, dict[str, int | bool]]
         Decoded prediction and generation-behavior diagnostics.
     """
-    if len(images) != 2:
-        raise ValueError(f"Expected 2 images, but got {len(images)}.")
-
-    # Build user-message content dynamically
-    content: list[dict[str, Any]] = []
-    for _ in images:
-        content.append({"type": "image"})
-    content.append({"type": "text", "text": prompt})
+    uses_images = input_mode_uses_images(input_mode)
+    content = build_user_content(
+        prompt,
+        input_mode=input_mode,
+        images=(None, None) if uses_images else (),
+    )
 
     messages = [{"role": "user", "content": content}]
 
@@ -146,11 +150,19 @@ def generate_one(
         add_generation_prompt=True,
     )
 
+    processor_kwargs: dict[str, Any] = {
+        "text": input_text,
+        "add_special_tokens": False,
+        "return_tensors": "pt",
+    }
+    if uses_images:
+        if len(images) != 2:
+            raise ValueError(f"Expected 2 images, but got {len(images)}.")
+        processor_kwargs["images"] = images
+    elif images:
+        raise ValueError(f"{input_mode} input_mode must not receive images")
     inputs = tokenizer(
-        images,
-        input_text,
-        add_special_tokens=False,
-        return_tensors="pt",
+        **processor_kwargs,
     ).to("cuda")
 
     do_sample = temperature > 0
@@ -215,6 +227,12 @@ def main(config: dict[str, Any]) -> None:
     seed: int = int(config.get("seed", 3407))
     include_formula = bool(config.get("include_formula", True))
     rule_context_enabled = bool(config.get("rule_context_enabled", False))
+    input_mode = validate_input_configuration(
+        config.get("input_mode", "full"),
+        include_formula=include_formula,
+        include_rule_context=rule_context_enabled,
+    )
+    uses_images = input_mode_uses_images(input_mode)
     rule_validation_enabled = bool(config.get("rule_validation_enabled", False))
     rule_library = str(load_rule_library()["library_name"])
 
@@ -231,8 +249,12 @@ def main(config: dict[str, Any]) -> None:
 
     # ---- 3. Select prompt template ---------------------------------------
     prompt_template_index = int(config.get("prompt_template_index", 0))
-    prompt_template = select_structure_prompt(prompt_template_index)
+    prompt_template = select_structure_prompt(
+        prompt_template_index,
+        input_mode=input_mode,
+    )
 
+    print(f"Input mode: {input_mode}")
     print(f"Formula included: {include_formula}")
     print(f"Rule context enabled: {rule_context_enabled}")
     print(f"Rule validation enabled: {rule_validation_enabled}")
@@ -256,20 +278,24 @@ def main(config: dict[str, Any]) -> None:
         for idx, row in tqdm(iterator, desc="Infer", total=max_samples):
             # --- extract data from raw row ---
             sample = row
-            images = list(
-                load_sample_images(
-                    sample,
-                    image_backend=config.get("image_backend", "lazy_render"),
-                    rendered_image_dir=config.get("rendered_image_dir"),
-                    missing_image_policy=config.get(
-                        "missing_image_policy", "error"
-                    ),
-                    h_snr=float(config.get("h_snr", 500.0)),
-                    c_snr=float(config.get("c_snr", 300.0)),
-                    render_seed=config.get("render_seed", seed),
-                    image_size=config.get("image_size"),
+            images: list[Any] = []
+            if uses_images:
+                images = list(
+                    load_sample_images(
+                        sample,
+                        image_backend=config.get(
+                            "image_backend", "lazy_render"
+                        ),
+                        rendered_image_dir=config.get("rendered_image_dir"),
+                        missing_image_policy=config.get(
+                            "missing_image_policy", "error"
+                        ),
+                        h_snr=float(config.get("h_snr", 500.0)),
+                        c_snr=float(config.get("c_snr", 300.0)),
+                        render_seed=config.get("render_seed", seed),
+                        image_size=config.get("image_size"),
+                    )
                 )
-            )
             label = str(sample.get("canonical_smiles", "") or "").strip()
 
             # --- build prompt ---
@@ -279,6 +305,7 @@ def main(config: dict[str, Any]) -> None:
                 include_formula=include_formula,
                 include_rule_context=rule_context_enabled,
                 max_rule_evidence=int(config.get("max_rule_evidence", 12)),
+                input_mode=input_mode,
             )
 
             # --- generate ---
@@ -291,6 +318,7 @@ def main(config: dict[str, Any]) -> None:
                     max_new_tokens=config.get("max_new_tokens", 256),
                     temperature=config.get("temperature", 0.0),
                     top_p=config.get("top_p", 1.0),
+                    input_mode=input_mode,
                 )
             except Exception:
                 pred = ""
@@ -320,6 +348,7 @@ def main(config: dict[str, Any]) -> None:
                 "id": sample.get("id"),
                 "prompt_template_index": prompt_template_index,
                 "include_formula": include_formula,
+                "input_mode": input_mode,
                 "rule_context_enabled": rule_context_enabled,
                 "rule_validation_enabled": rule_validation_enabled,
                 "rule_library": (
@@ -344,6 +373,7 @@ def main(config: dict[str, Any]) -> None:
     )
     summary["generation_errors"] = n_errors
     summary["prompt_template_index"] = prompt_template_index
+    summary["input_mode"] = input_mode
     summary["rule_context_enabled"] = rule_context_enabled
     summary["rule_validation_enabled"] = rule_validation_enabled
     if rule_context_enabled or rule_validation_enabled:

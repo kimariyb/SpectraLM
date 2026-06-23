@@ -15,11 +15,19 @@ Training runs:
   scale-5k  scale-10k  scale-25k
   main-3407  main-42  main-2026  no-formula
   rules-50k  rules-no-formula  multitask-50k
+  modality-image-only-5k
+  modality-peak-table-only-5k  modality-formula-only-5k
+  modality-image-only-50k
+  modality-peak-table-only-50k
 
 Inference runs:
   zero-shot  scale-5k  scale-10k  scale-25k
   main-3407  main-42  main-2026  no-formula
   rules-50k  rules-no-formula  multitask-50k
+  modality-image-only-5k
+  modality-peak-table-only-5k  modality-formula-only-5k
+  modality-image-only-50k
+  modality-peak-table-only-50k
 EOF
 }
 
@@ -52,6 +60,16 @@ case "${stage}:${run_name}" in
     config="configs/experiments/train_rules_no_formula_50k.yaml" ;;
   train:multitask-50k)
     config="configs/experiments/train_multitask_50k.yaml" ;;
+  train:modality-image-only-5k)
+    config="configs/experiments/train_modality_image_only_5k.yaml" ;;
+  train:modality-peak-table-only-5k)
+    config="configs/experiments/train_modality_peak_table_only_5k.yaml" ;;
+  train:modality-formula-only-5k)
+    config="configs/experiments/train_modality_formula_only_5k.yaml" ;;
+  train:modality-image-only-50k)
+    config="configs/experiments/train_modality_image_only_50k.yaml" ;;
+  train:modality-peak-table-only-50k)
+    config="configs/experiments/train_modality_peak_table_only_50k.yaml" ;;
   infer:zero-shot)
     config="configs/experiments/infer_zero_shot_50k.yaml" ;;
   infer:scale-5k)
@@ -74,6 +92,16 @@ case "${stage}:${run_name}" in
     config="configs/experiments/infer_rules_no_formula_50k.yaml" ;;
   infer:multitask-50k)
     config="configs/experiments/infer_multitask_50k.yaml" ;;
+  infer:modality-image-only-5k)
+    config="configs/experiments/infer_modality_image_only_5k.yaml" ;;
+  infer:modality-peak-table-only-5k)
+    config="configs/experiments/infer_modality_peak_table_only_5k.yaml" ;;
+  infer:modality-formula-only-5k)
+    config="configs/experiments/infer_modality_formula_only_5k.yaml" ;;
+  infer:modality-image-only-50k)
+    config="configs/experiments/infer_modality_image_only_50k.yaml" ;;
+  infer:modality-peak-table-only-50k)
+    config="configs/experiments/infer_modality_peak_table_only_50k.yaml" ;;
   *)
     usage >&2
     exit 2 ;;

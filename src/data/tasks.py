@@ -9,7 +9,11 @@ from typing import Any, Mapping, Sequence
 from src.data.functional_groups import FUNCTIONAL_GROUP_SMARTS, functional_groups
 from src.data.molecules import canonicalize_smiles, sample_smiles
 from src.data.spectral_regions import classify_spectral_regions
-from src.evaluation.prompts import STRUCTURE_PROMPTS, build_structure_prompt
+from src.data.modalities import FULL, validate_input_configuration
+from src.evaluation.prompts import (
+    build_structure_prompt,
+    select_structure_prompt,
+)
 
 
 STRUCTURE_PREDICTION = "structure_prediction"
@@ -74,6 +78,7 @@ def _task_prompt(
     include_formula: bool,
     include_rule_context: bool,
     max_rule_evidence: int,
+    input_mode: str,
 ) -> str:
     return build_structure_prompt(
         sample,
@@ -81,6 +86,7 @@ def _task_prompt(
         include_formula=include_formula,
         include_rule_context=include_rule_context,
         max_rule_evidence=max_rule_evidence,
+        input_mode=input_mode,
     )
 
 
@@ -93,6 +99,7 @@ def build_task_example(
     include_formula: bool = True,
     include_rule_context: bool = False,
     max_rule_evidence: int = 12,
+    input_mode: str = FULL,
 ) -> TaskExample:
     """Build one prompt and target for a supported NMR supervision task.
 
@@ -120,12 +127,21 @@ def build_task_example(
     """
     if task not in SUPPORTED_TASKS:
         raise ValueError(f"Unsupported auxiliary task: {task}")
+    input_mode = validate_input_configuration(
+        input_mode,
+        include_formula=include_formula,
+        include_rule_context=include_rule_context,
+        task_names=(task,),
+    )
     target = canonicalize_smiles(sample_smiles(sample))
     if target is None:
         raise ValueError("Task sample requires a valid target structure.")
 
     if task == STRUCTURE_PREDICTION:
-        template = structure_prompt or STRUCTURE_PROMPTS[0]
+        template = structure_prompt or select_structure_prompt(
+            0,
+            input_mode=input_mode,
+        )
         return TaskExample(
             task=task,
             prompt=_task_prompt(
@@ -134,6 +150,7 @@ def build_task_example(
                 include_formula=include_formula,
                 include_rule_context=include_rule_context,
                 max_rule_evidence=max_rule_evidence,
+                input_mode=input_mode,
             ),
             target=target,
         )
@@ -155,6 +172,7 @@ def build_task_example(
                 include_formula=include_formula,
                 include_rule_context=include_rule_context,
                 max_rule_evidence=max_rule_evidence,
+                input_mode=input_mode,
             ),
             target=json.dumps(
                 sorted(functional_groups(target)),
@@ -179,6 +197,7 @@ def build_task_example(
                 include_formula=include_formula,
                 include_rule_context=False,
                 max_rule_evidence=max_rule_evidence,
+                input_mode=input_mode,
             ),
             target=json.dumps(
                 classify_spectral_regions(sample),
@@ -212,6 +231,7 @@ def build_task_example(
             include_formula=include_formula,
             include_rule_context=include_rule_context,
             max_rule_evidence=max_rule_evidence,
+            input_mode=input_mode,
         ),
         target=target,
     )
