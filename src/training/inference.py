@@ -45,6 +45,7 @@ from src.evaluation.prompts import (
     select_structure_prompt,
 )
 from src.nmr_rules.engine import load_rule_library
+from src.training.response_masking import apply_non_thinking_chat_template
 
 
 def load_model_for_inference(
@@ -77,6 +78,7 @@ def load_model_for_inference(
         max_seq_length=max_seq_length,
         load_in_4bit=load_in_4bit,
         use_gradient_checkpointing=False,
+        attn_implementation="sdpa"
     )
 
     if adapter_path is not None:
@@ -145,10 +147,7 @@ def generate_one(
 
     messages = [{"role": "user", "content": content}]
 
-    input_text = tokenizer.apply_chat_template(
-        messages,
-        add_generation_prompt=True,
-    )
+    input_text = apply_non_thinking_chat_template(tokenizer, messages)
 
     processor_kwargs: dict[str, Any] = {
         "text": input_text,

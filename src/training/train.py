@@ -109,6 +109,7 @@ def main(config: dict[str, Any]) -> None:
         max_seq_length=config.get("max_seq_length", 8192),
         load_in_4bit=config.get("load_in_4bit", True),
         use_gradient_checkpointing=config.get("use_gradient_checkpointing", "unsloth"),
+        attn_implementation="sdpa"
     )
 
     # 3. Apply LoRA adapters

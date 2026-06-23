@@ -17,6 +17,15 @@ class _FakeTokenizer:
         return self.decoded
 
 
+class _FakeProcessor:
+    def __init__(self) -> None:
+        self.calls = []
+
+    def apply_chat_template(self, messages, **kwargs) -> str:
+        self.calls.append((messages, kwargs))
+        return "rendered prompt"
+
+
 def _validator():
     module = importlib.import_module("src.training.response_masking")
     return module.validate_response_only_batch
@@ -38,6 +47,41 @@ def test_validate_response_only_batch_accepts_exact_assistant_target() -> None:
         "supervised_tokens": 2,
         "decoded_response": "C C O",
     }
+
+
+def test_validate_response_only_batch_accepts_qwen_empty_thinking_prefix() -> None:
+    """Qwen3.5 non-thinking supervision may prepend an empty think block."""
+    stats = _validator()(
+        {
+            "input_ids": [[10, 11, 12, 13]],
+            "labels": [[-100, -100, 12, 13]],
+        },
+        _FakeTokenizer("<think>\n\n</think>\n\nCCO"),
+        expected_response="CCO",
+    )
+
+    assert stats["decoded_response"] == "CCO"
+
+
+def test_non_thinking_generation_prompt_disables_qwen_thinking() -> None:
+    """Inference must begin after Qwen's empty non-thinking prefix."""
+    module = importlib.import_module("src.training.response_masking")
+    processor = _FakeProcessor()
+    messages = [{"role": "user", "content": "Predict."}]
+
+    rendered = module.apply_non_thinking_chat_template(processor, messages)
+
+    assert rendered == "rendered prompt"
+    assert processor.calls == [
+        (
+            messages,
+            {
+                "tokenize": False,
+                "add_generation_prompt": True,
+                "enable_thinking": False,
+            },
+        )
+    ]
 
 
 def test_validate_response_only_batch_rejects_fully_masked_labels() -> None:

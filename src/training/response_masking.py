@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any, Mapping
+
+
+_EMPTY_THINKING_PREFIX = re.compile(r"^\s*<think>\s*</think>\s*")
 
 
 def assistant_response_text(sample: Mapping[str, Any]) -> str:
@@ -49,6 +53,24 @@ def _normalize_decoded_text(text: str) -> str:
     return "".join(str(text).split())
 
 
+def _strip_empty_thinking_prefix(text: str) -> str:
+    """Remove Qwen's empty non-thinking wrapper without hiding reasoning."""
+    return _EMPTY_THINKING_PREFIX.sub("", str(text), count=1).strip()
+
+
+def apply_non_thinking_chat_template(
+    processor: Any,
+    messages: list[dict[str, Any]],
+) -> str:
+    """Render a generation prompt with Qwen thinking explicitly disabled."""
+    return processor.apply_chat_template(
+        messages,
+        tokenize=False,
+        add_generation_prompt=True,
+        enable_thinking=False,
+    )
+
+
 def validate_response_only_batch(
     batch: Mapping[str, Any],
     tokenizer: Any,
@@ -86,16 +108,17 @@ def validate_response_only_batch(
         )
 
     decoder = getattr(tokenizer, "tokenizer", tokenizer)
-    decoded_response = decoder.decode(
+    raw_decoded_response = decoder.decode(
         supervised_ids,
         skip_special_tokens=True,
     ).strip()
+    decoded_response = _strip_empty_thinking_prefix(raw_decoded_response)
     if _normalize_decoded_text(decoded_response) != _normalize_decoded_text(
         expected_response
     ):
         raise RuntimeError(
             "Response-only supervised text does not match the expected target. "
-            f"Expected {expected_response!r}, decoded {decoded_response!r}."
+            f"Expected {expected_response!r}, decoded {raw_decoded_response!r}."
         )
 
     return {
