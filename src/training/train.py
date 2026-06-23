@@ -6,7 +6,7 @@ Usage::
 """
 
 from __future__ import annotations
-
+import unsloth
 import sys
 import torch
 from typing import Any

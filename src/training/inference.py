@@ -13,7 +13,7 @@ Usage::
 """
 
 from __future__ import annotations
-
+import unsloth
 import itertools
 import json
 import sys
