@@ -2,7 +2,7 @@
 prompt_template_index: 0
 input_mode: full
 
-model_path: /mnt/data/kimariyb/models/Qwen3_5-9B
+model_path: /mnt/data/kimariyb/models/Qwen3.5-9B
 adapter_path: outputs/experiments/structure/main-50k-formula-seed42/best_model
 max_seq_length: 4096
 load_in_4bit: true

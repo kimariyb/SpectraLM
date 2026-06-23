@@ -1,5 +1,5 @@
 # Matched 50k modality ablation: images + formula, without peak tables.
-model_path: /mnt/data/kimariyb/models/Qwen3_5-9B
+model_path: /mnt/data/kimariyb/models/Qwen3.5-9B
 max_seq_length: 4096
 load_in_4bit: true
 use_gradient_checkpointing: false

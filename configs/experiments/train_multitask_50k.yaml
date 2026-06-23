@@ -1,6 +1,6 @@
 # Approved four-task NMR multitask training on one 48GB CUDA GPU.
 
-model_path: /mnt/data/kimariyb/models/Qwen3_5-9B
+model_path: /mnt/data/kimariyb/models/Qwen3.5-9B
 max_seq_length: 8192
 load_in_4bit: true
 use_gradient_checkpointing: false
