@@ -1,4 +1,4 @@
-"""Soft functional-group consistency checks against observed 1D NMR regions."""
+"""Soft functional-group support checks against observed 1D NMR regions."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from src.data.molecules import canonicalize_smiles
 from src.nmr_rules.engine import _c13_shifts, _h1_peaks
 
 
-def evaluate_functional_group_spectral_consistency(
+def evaluate_functional_group_spectral_support(
     smiles: str | None,
     sample: dict[str, Any],
 ) -> dict[str, Any]:
@@ -33,7 +33,7 @@ def evaluate_functional_group_spectral_consistency(
             "spectral_functional_group_checks": {},
             "spectral_functional_groups_applicable": 0,
             "spectral_functional_groups_supported": 0,
-            "functional_group_spectral_consistency": None,
+            "functional_group_spectral_support_rate": None,
         }
 
     groups = functional_groups(canonical)
@@ -71,7 +71,7 @@ def evaluate_functional_group_spectral_consistency(
         "spectral_functional_group_checks": checks,
         "spectral_functional_groups_applicable": applicable,
         "spectral_functional_groups_supported": supported,
-        "functional_group_spectral_consistency": (
+        "functional_group_spectral_support_rate": (
             supported / applicable if applicable else None
         ),
     }

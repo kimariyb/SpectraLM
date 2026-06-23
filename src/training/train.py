@@ -21,9 +21,14 @@ from src.data.dataset import load_lazy_nmr_dataset
 from src.data.tasks import normalize_task_weights
 from src.training.arguments import (
     build_early_stopping_kwargs,
+    build_response_only_collator_kwargs,
     build_sft_kwargs,
     build_vision_collator_kwargs,
     training_log_dir,
+)
+from src.training.response_masking import (
+    assistant_response_text,
+    validate_response_only_batch,
 )
 from trl import SFTConfig, SFTTrainer
 
@@ -124,6 +129,26 @@ def main(config: dict[str, Any]) -> None:
     sft_kwargs = build_sft_kwargs(config)
     early_stopping_kwargs = build_early_stopping_kwargs(config)
     vision_collator_kwargs = build_vision_collator_kwargs(config)
+    response_only_kwargs = build_response_only_collator_kwargs()
+
+    data_collator = UnslothVisionDataCollator(
+        model,
+        tokenizer,
+        **vision_collator_kwargs,
+        **response_only_kwargs,
+    )
+    preflight_sample = train_ds[0]
+    masking_stats = validate_response_only_batch(
+        data_collator([preflight_sample]),
+        tokenizer,
+        expected_response=assistant_response_text(preflight_sample),
+    )
+    print(
+        "Response-only supervision verified: "
+        f"{masking_stats['supervised_tokens']}/"
+        f"{masking_stats['sequence_tokens']} tokens are supervised; "
+        f"target={masking_stats['decoded_response']!r}"
+    )
 
     training_logger = TrainingLogger(
         output_dir=training_log_dir(config),
@@ -154,6 +179,7 @@ def main(config: dict[str, Any]) -> None:
             "image_backend": config.get("image_backend", "lazy_render"),
             "image_size": config.get("image_size"),
             "collator_resize": vision_collator_kwargs.get("resize"),
+            "train_on_responses_only": True,
             "rendered_image_dir": config.get("rendered_image_dir"),
             "train_split_name": train_split_name,
             "eval_split_name": eval_split_name,
@@ -177,11 +203,7 @@ def main(config: dict[str, Any]) -> None:
     trainer = SFTTrainer(
         model=model,
         tokenizer=tokenizer,
-        data_collator=UnslothVisionDataCollator(
-            model,
-            tokenizer,
-            **vision_collator_kwargs,
-        ),
+        data_collator=data_collator,
         callbacks=[logger_callback, early_stopping_callback],
         train_dataset=train_ds,
         eval_dataset=eval_ds,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 import subprocess
 
@@ -73,6 +74,22 @@ RULE_INFERENCE_RUNS = {
 
 MULTITASK_TRAIN_CONFIG = "experiments/train_multitask_50k.yaml"
 MULTITASK_INFERENCE_CONFIG = "experiments/infer_multitask_50k.yaml"
+
+
+def test_train_imports_unsloth_before_the_cuda_training_stack() -> None:
+    """Unsloth must patch the training stack before Torch/Transformers imports."""
+    train_path = Path(__file__).parents[1] / "src" / "training" / "train.py"
+    tree = ast.parse(train_path.read_text(encoding="utf-8"))
+    normal_imports = [
+        node
+        for node in tree.body
+        if isinstance(node, (ast.Import, ast.ImportFrom))
+        and not (isinstance(node, ast.ImportFrom) and node.module == "__future__")
+    ]
+
+    first_import = normal_imports[0]
+    assert isinstance(first_import, ast.Import)
+    assert [alias.name for alias in first_import.names] == ["unsloth"]
 
 
 def _read_yaml(name: str) -> dict:
@@ -154,6 +171,11 @@ def test_rule_training_runs_are_isolated_from_baselines() -> None:
     """Rule-context training should keep data and optimization controls fixed."""
     for name, (include_formula, output_name) in RULE_TRAIN_RUNS.items():
         config = _read_yaml(name)
+        baseline = _read_yaml(
+            "train_cuda_48g_jsonl.yaml"
+            if include_formula
+            else "train_cuda_48g_no_formula.yaml"
+        )
         _assert_no_legacy_keys(config)
         assert config["rule_context_enabled"] is True
         assert config["max_rule_evidence"] == 12
@@ -162,10 +184,23 @@ def test_rule_training_runs_are_isolated_from_baselines() -> None:
         assert config["eval_split_name"] == "clean_50k_val"
         assert config["max_eval_samples"] == 5000
         assert config["seed"] == 3407
-        assert config["num_train_epochs"] == 2
-        assert config["per_device_train_batch_size"] == 16
-        assert config["per_device_eval_batch_size"] == 4
-        assert config["gradient_accumulation_steps"] == 2
+        for key in (
+            "num_train_epochs",
+            "per_device_train_batch_size",
+            "per_device_eval_batch_size",
+            "eval_accumulation_steps",
+            "gradient_accumulation_steps",
+            "learning_rate",
+            "weight_decay",
+            "warmup_steps",
+            "lr_scheduler_type",
+            "optim",
+            "eval_steps",
+            "save_steps",
+            "early_stopping_patience",
+            "early_stopping_threshold",
+        ):
+            assert config[key] == baseline[key]
         assert config["output_dir"].endswith(output_name)
         assert config["output_dir"].startswith("outputs/experiments/rules/")
 

@@ -10,10 +10,15 @@ from rdkit import Chem, DataStructs
 from rdkit.Chem import rdMolDescriptors
 from rdkit.Chem.Scaffolds import MurckoScaffold
 
-from src.data.functional_groups import functional_groups
-from src.data.molecules import canonicalize_smiles
+from src.data.functional_groups import FUNCTIONAL_GROUP_SMARTS, functional_groups
+from src.data.molecules import ALLOWED_ELEMENT_SYMBOLS, canonicalize_smiles
+from src.evaluation.generation_metrics import (
+    inspect_generation_tokens,
+    summarize_generation_behavior,
+)
+from src.evaluation.multilabel_metrics import summarize_multilabel_predictions
 from src.evaluation.spectral_consistency import (
-    evaluate_functional_group_spectral_consistency,
+    evaluate_functional_group_spectral_support,
 )
 from src.nmr_rules.validator import validate_candidate
 
@@ -21,7 +26,9 @@ from src.nmr_rules.validator import validate_candidate
 def classify_output_behavior(text: str) -> dict[str, bool]:
     """Classify a response into one disjoint output-behavior state."""
     stripped = str(text or "").strip()
-    nonempty_lines = [line.strip() for line in stripped.splitlines() if line.strip()]
+    nonempty_lines = [
+        line.strip() for line in stripped.splitlines() if line.strip()
+    ]
     bare = (
         bool(stripped)
         and len(nonempty_lines) == 1
@@ -33,19 +40,19 @@ def classify_output_behavior(text: str) -> dict[str, bool]:
     if not bare:
         return {
             "output_format_compliant": False,
-            "illegal_structure": False,
-            "non_smiles_output": True,
+            "rdkit_invalid_bare_output": False,
+            "non_bare_output": True,
         }
     if canonicalize_smiles(stripped) is None:
         return {
             "output_format_compliant": False,
-            "illegal_structure": True,
-            "non_smiles_output": False,
+            "rdkit_invalid_bare_output": True,
+            "non_bare_output": False,
         }
     return {
         "output_format_compliant": True,
-        "illegal_structure": False,
-        "non_smiles_output": False,
+        "rdkit_invalid_bare_output": False,
+        "non_bare_output": False,
     }
 
 
@@ -99,12 +106,14 @@ def tanimoto_similarity(predicted: str | None, reference: str | None) -> float:
     pred_fp = rdMolDescriptors.GetMorganFingerprintAsBitVect(
         pred_mol,
         radius=2,
-        nBits=1024,
+        nBits=2048,
+        useChirality=False,
     )
     ref_fp = rdMolDescriptors.GetMorganFingerprintAsBitVect(
         ref_mol,
         radius=2,
-        nBits=1024,
+        nBits=2048,
+        useChirality=False,
     )
     return float(DataStructs.TanimotoSimilarity(pred_fp, ref_fp))
 
@@ -140,6 +149,29 @@ def _ring_scaffold(smiles: str | None) -> str | None:
     return scaffold or None
 
 
+def _domain_validity(smiles: str | None) -> dict[str, bool]:
+    """Check whether a valid SMILES satisfies the project molecule policy."""
+    canonical = canonicalize_smiles(smiles)
+    mol = Chem.MolFromSmiles(canonical) if canonical is not None else None
+    if mol is None:
+        return {
+            "has_only_allowed_elements": False,
+            "is_single_component": False,
+            "is_neutral": False,
+            "domain_valid_smiles": False,
+        }
+    elements = {atom.GetSymbol() for atom in mol.GetAtoms()}
+    allowed = elements <= ALLOWED_ELEMENT_SYMBOLS
+    single_component = len(Chem.GetMolFrags(mol)) == 1
+    neutral = sum(atom.GetFormalCharge() for atom in mol.GetAtoms()) == 0
+    return {
+        "has_only_allowed_elements": allowed,
+        "is_single_component": single_component,
+        "is_neutral": neutral,
+        "domain_valid_smiles": allowed and single_component and neutral,
+    }
+
+
 def _functional_group_metrics(
     predicted: str | None,
     reference: str | None,
@@ -172,15 +204,24 @@ def evaluate_candidate_ranking(
     ranked_candidates: list[str],
     reference_smiles: str | None,
 ) -> dict[str, float]:
-    """Calculate candidate Top-1 accuracy and reciprocal rank."""
+    """Calculate candidate coverage, validity, Hits@k, and reciprocal rank."""
     reference = canonicalize_smiles(reference_smiles)
     ranked = [canonicalize_smiles(candidate) for candidate in ranked_candidates]
     try:
         rank = ranked.index(reference) + 1 if reference is not None else 0
     except ValueError:
         rank = 0
+    total = len(ranked)
     return {
+        "candidate_reference_covered": float(rank > 0),
+        "candidate_valid_rate": (
+            sum(candidate is not None for candidate in ranked) / total
+            if total
+            else 0.0
+        ),
         "candidate_top1_accuracy": float(rank == 1),
+        "candidate_hits_at_3": float(0 < rank <= 3),
+        "candidate_hits_at_5": float(0 < rank <= 5),
         "candidate_mrr": 1.0 / rank if rank else 0.0,
     }
 
@@ -201,7 +242,7 @@ def evaluate_structure_prediction(
     reference_formula = _molecular_formula(reference)
     predicted_scaffold = _ring_scaffold(predicted)
     reference_scaffold = _ring_scaffold(reference)
-    scaffold_evaluable = reference_scaffold is not None
+    reference_scaffold_available = reference_scaffold is not None
     formula_match = (
         predicted_formula is not None
         and reference_formula is not None
@@ -211,6 +252,7 @@ def evaluate_structure_prediction(
         "predicted_smiles": predicted,
         "reference_smiles": reference,
         "valid_smiles": predicted is not None,
+        **_domain_validity(predicted),
         "exact_match": (
             predicted is not None
             and reference is not None
@@ -223,14 +265,14 @@ def evaluate_structure_prediction(
         ),
         "predicted_formula": predicted_formula,
         "reference_formula": reference_formula,
-        "formula_match": formula_match,
         "molecular_formula_match": formula_match,
-        "predicted_scaffold": predicted_scaffold,
-        "reference_scaffold": reference_scaffold,
-        "scaffold_evaluable": scaffold_evaluable,
-        "scaffold_match": (
+        "predicted_ring_scaffold": predicted_scaffold,
+        "reference_ring_scaffold": reference_scaffold,
+        "predicted_ring_scaffold_available": predicted_scaffold is not None,
+        "reference_ring_scaffold_available": reference_scaffold_available,
+        "ring_scaffold_match": (
             predicted_scaffold == reference_scaffold
-            if scaffold_evaluable
+            if reference_scaffold_available
             else None
         ),
         "tanimoto": tanimoto_similarity(predicted, reference),
@@ -246,20 +288,75 @@ def evaluate_structure_prediction(
             ).to_metrics()
         )
         result.update(
-            evaluate_functional_group_spectral_consistency(predicted, sample)
+            evaluate_functional_group_spectral_support(predicted, sample)
         )
     return result
+
+
+def _upgrade_prediction_row(row: dict[str, Any]) -> dict[str, Any]:
+    """Map legacy prediction fields to the current summary schema."""
+    upgraded = dict(row)
+    legacy_schema = (
+        "domain_valid_smiles" not in upgraded
+        or "predicted_scaffold" in upgraded
+        or "illegal_structure" in upgraded
+    )
+    if legacy_schema and "prediction" in upgraded and "label" in upgraded:
+        upgraded.update(
+            evaluate_structure_prediction(
+                str(upgraded["prediction"]),
+                str(upgraded["label"]),
+            )
+        )
+    if "domain_valid_smiles" not in upgraded:
+        upgraded.update(_domain_validity(upgraded.get("predicted_smiles")))
+    if "predicted_ring_scaffold" not in upgraded:
+        upgraded["predicted_ring_scaffold"] = upgraded.get(
+            "predicted_scaffold"
+        )
+    if "reference_ring_scaffold" not in upgraded:
+        upgraded["reference_ring_scaffold"] = upgraded.get(
+            "reference_scaffold"
+        )
+    if "predicted_ring_scaffold_available" not in upgraded:
+        upgraded["predicted_ring_scaffold_available"] = (
+            upgraded["predicted_ring_scaffold"] is not None
+        )
+    if "reference_ring_scaffold_available" not in upgraded:
+        upgraded["reference_ring_scaffold_available"] = bool(
+            upgraded.get("scaffold_evaluable")
+        )
+    if "ring_scaffold_match" not in upgraded:
+        upgraded["ring_scaffold_match"] = upgraded.get("scaffold_match")
+    if "rdkit_invalid_bare_output" not in upgraded:
+        upgraded["rdkit_invalid_bare_output"] = bool(
+            upgraded.get("illegal_structure")
+        )
+    if "non_bare_output" not in upgraded:
+        upgraded["non_bare_output"] = bool(
+            upgraded.get("non_smiles_output")
+        )
+    if "functional_group_spectral_support_rate" not in upgraded:
+        upgraded["functional_group_spectral_support_rate"] = upgraded.get(
+            "functional_group_spectral_consistency"
+        )
+    return upgraded
 
 
 def summarize_structure_predictions(
     rows: list[dict[str, Any]],
 ) -> dict[str, Any]:
     """Aggregate exact match, validity, and Tanimoto metrics."""
+    rows = [_upgrade_prediction_row(row) for row in rows]
     total = len(rows)
     if total == 0:
         return {"samples": 0}
     similarities = np.asarray(
         [float(row["tanimoto"]) for row in rows],
+        dtype=np.float64,
+    )
+    valid_similarities = np.asarray(
+        [float(row["tanimoto"]) for row in rows if bool(row["valid_smiles"])],
         dtype=np.float64,
     )
     summary = {
@@ -268,39 +365,83 @@ def summarize_structure_predictions(
         "connectivity_exact_match": (
             sum(bool(row["connectivity_exact_match"]) for row in rows) / total
         ),
-        "formula_match_rate": (
-            sum(bool(row["formula_match"]) for row in rows) / total
-        ),
         "molecular_formula_accuracy": (
             sum(bool(row["molecular_formula_match"]) for row in rows) / total
         ),
         "valid_smiles_rate": (
             sum(bool(row["valid_smiles"]) for row in rows) / total
         ),
+        "domain_valid_smiles_rate": (
+            sum(bool(row["domain_valid_smiles"]) for row in rows) / total
+        ),
         "mean_tanimoto": float(np.mean(similarities)),
+        "mean_tanimoto_valid_only": (
+            float(np.mean(valid_similarities))
+            if valid_similarities.size
+            else None
+        ),
         "median_tanimoto": float(np.median(similarities)),
         "tanimoto_q25": float(np.quantile(similarities, 0.25)),
         "tanimoto_q75": float(np.quantile(similarities, 0.75)),
         "tanimoto_ge_0_3_rate": float(np.mean(similarities >= 0.3)),
         "tanimoto_ge_0_5_rate": float(np.mean(similarities >= 0.5)),
         "tanimoto_ge_0_7_rate": float(np.mean(similarities >= 0.7)),
-        "mean_functional_group_f1": float(
-            np.mean([float(row["functional_group_f1"]) for row in rows])
-        ),
         "output_format_compliance_rate": (
             sum(bool(row["output_format_compliant"]) for row in rows) / total
         ),
-        "illegal_structure_rate": (
-            sum(bool(row["illegal_structure"]) for row in rows) / total
+        "rdkit_invalid_bare_output_rate": (
+            sum(bool(row["rdkit_invalid_bare_output"]) for row in rows) / total
         ),
-        "non_smiles_output_rate": (
-            sum(bool(row["non_smiles_output"]) for row in rows) / total
+        "non_bare_output_rate": (
+            sum(bool(row["non_bare_output"]) for row in rows) / total
         ),
     }
-    scaffold_rows = [row for row in rows if row["scaffold_evaluable"]]
-    summary["scaffold_coverage"] = len(scaffold_rows) / total
-    summary["scaffold_match_rate"] = (
-        sum(bool(row["scaffold_match"]) for row in scaffold_rows)
+    predicted_groups = [set(row["predicted_functional_groups"]) for row in rows]
+    reference_groups = [set(row["reference_functional_groups"]) for row in rows]
+    group_summary = summarize_multilabel_predictions(
+        predicted_groups,
+        reference_groups,
+        label_space=[label for label, _ in FUNCTIONAL_GROUP_SMARTS],
+    )
+    summary.update(
+        {
+            "functional_group_sample_macro_precision": float(
+                np.mean([float(row["functional_group_precision"]) for row in rows])
+            ),
+            "functional_group_sample_macro_recall": float(
+                np.mean([float(row["functional_group_recall"]) for row in rows])
+            ),
+            "functional_group_sample_macro_f1": float(
+                np.mean([float(row["functional_group_f1"]) for row in rows])
+            ),
+            "functional_group_micro_precision": group_summary[
+                "multilabel_micro_precision"
+            ],
+            "functional_group_micro_recall": group_summary[
+                "multilabel_micro_recall"
+            ],
+            "functional_group_micro_f1": group_summary["multilabel_micro_f1"],
+            "functional_group_macro_f1": group_summary["multilabel_macro_f1"],
+            "functional_group_supported_macro_f1": group_summary[
+                "multilabel_supported_macro_f1"
+            ],
+            "functional_group_reference_coverage": sum(
+                bool(groups) for groups in reference_groups
+            )
+            / total,
+            "functional_group_per_class": group_summary["multilabel_per_class"],
+        }
+    )
+
+    scaffold_rows = [
+        row for row in rows if row["reference_ring_scaffold_available"]
+    ]
+    summary["reference_ring_scaffold_coverage"] = len(scaffold_rows) / total
+    summary["predicted_ring_scaffold_coverage"] = sum(
+        bool(row["predicted_ring_scaffold_available"]) for row in rows
+    ) / total
+    summary["ring_scaffold_match_rate"] = (
+        sum(bool(row["ring_scaffold_match"]) for row in scaffold_rows)
         / len(scaffold_rows)
         if scaffold_rows
         else None
@@ -308,16 +449,16 @@ def summarize_structure_predictions(
     spectral_rows = [
         row
         for row in rows
-        if row.get("functional_group_spectral_consistency") is not None
+        if row.get("functional_group_spectral_support_rate") is not None
     ]
-    summary["functional_group_spectral_consistency_coverage"] = (
+    summary["functional_group_spectral_support_coverage"] = (
         len(spectral_rows) / total
     )
-    summary["mean_functional_group_spectral_consistency"] = (
+    summary["mean_functional_group_spectral_support_rate_applicable"] = (
         float(
             np.mean(
                 [
-                    float(row["functional_group_spectral_consistency"])
+                    float(row["functional_group_spectral_support_rate"])
                     for row in spectral_rows
                 ]
             )
@@ -325,11 +466,41 @@ def summarize_structure_predictions(
         if spectral_rows
         else None
     )
-    rule_rows = [row for row in rows if "rule_consistency_rate" in row]
-    if rule_rows:
-        summary["mean_rule_consistency_rate"] = float(
-            np.mean([float(row["rule_consistency_rate"]) for row in rule_rows])
+    summary["end_to_end_functional_group_spectral_support_rate"] = float(
+        np.mean(
+            [
+                float(row.get("functional_group_spectral_support_rate") or 0.0)
+                for row in rows
+            ]
         )
+    )
+
+    rule_rows = [row for row in rows if "rule_checks" in row]
+    if rule_rows:
+        check_names = sorted(
+            {name for row in rule_rows for name in row.get("rule_checks", {})}
+        )
+        summary["rule_check_pass_rates"] = {
+            name: {
+                "applicable": sum(
+                    name in row.get("rule_checks", {}) for row in rule_rows
+                ),
+                "passed": sum(
+                    bool(row.get("rule_checks", {}).get(name)) for row in rule_rows
+                ),
+                "rate": (
+                    sum(
+                        bool(row.get("rule_checks", {}).get(name))
+                        for row in rule_rows
+                    )
+                    / sum(
+                        name in row.get("rule_checks", {})
+                        for row in rule_rows
+                    )
+                ),
+            }
+            for name in check_names
+        }
         summary["rule_contradiction_rate"] = sum(
             int(row.get("rule_contradiction_count", 0)) > 0
             for row in rule_rows

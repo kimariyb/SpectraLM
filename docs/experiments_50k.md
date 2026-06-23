@@ -152,13 +152,35 @@ CUDA_VISIBLE_DEVICES=0 bash script/run_experiment.sh infer multitask-50k
 
 Predictions are written under `outputs/experiments/structure/`,
 `outputs/experiments/rules/`, or `outputs/experiments/multitask/`. Each JSONL
-has a sibling `*.summary.json` containing canonical exact match, valid SMILES
-rate, mean Morgan-fingerprint Tanimoto similarity, and generation error count.
-Rule runs additionally report mean rule consistency and contradiction rate.
-Summaries also report molecular-formula accuracy, Murcko scaffold match and
-coverage, functional-group F1, functional-group
-spectral consistency, output-format compliance, illegal-structure rate, and
-non-SMILES-output rate.
+has a sibling `*.summary.json` containing the metrics defined below.
+
+### Evaluation metric contract
+
+- `exact_match` compares stereochemistry-aware RDKit canonical SMILES.
+- `connectivity_exact_match` canonicalizes with stereochemistry disabled.
+- `valid_smiles_rate` measures whether a SMILES candidate can be extracted and
+  parsed by RDKit. `domain_valid_smiles_rate` additionally requires one neutral
+  component containing only `H C N O F Si P S Cl Br I`.
+- `molecular_formula_accuracy` compares formulas calculated by RDKit from the
+  predicted and reference structures.
+- Morgan-fingerprint Tanimoto uses radius 2, 2,048 bits, and no chirality. The
+  summary reports both the end-to-end mean, where invalid predictions score
+  zero, and the conditional mean over RDKit-valid predictions.
+- Ring-scaffold matching uses an achiral Bemis-Murcko scaffold.
+  `reference_ring_scaffold_coverage` is the fraction of references with a
+  non-empty ring scaffold; `predicted_ring_scaffold_coverage` is the equivalent
+  prediction-side rate. Acyclic references are excluded from the ring-scaffold
+  match denominator.
+- Functional groups use the fixed SMARTS ontology and report sample-macro,
+  micro, macro, supported-macro, and per-class precision/recall/F1 statistics.
+- Strict behavior states are mutually exclusive: compliant bare SMILES,
+  RDKit-invalid bare output, and non-bare output.
+- Generation diagnostics report EOS termination, max-token truncation,
+  repeated token 4-grams, unique predictions, and duplicate predictions.
+- Rule-enabled runs report each rule's applicable count and pass rate plus the
+  fraction of candidates with at least one contradiction. Soft functional-group
+  spectral support is reported separately with its applicability coverage; it
+  is not treated as proof of structural correctness.
 
 ## 7. Reporting
 

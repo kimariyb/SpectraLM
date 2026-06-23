@@ -85,6 +85,24 @@ def test_build_vision_collator_kwargs_uses_configured_image_size() -> None:
     assert builder({"image_size": [768, 432]}) == {"resize": (768, 432)}
 
 
+def test_response_only_collator_kwargs_match_qwen_chat_boundaries() -> None:
+    """Every training run should supervise only the assistant response."""
+    builder = getattr(
+        _training_arguments_module(),
+        "build_response_only_collator_kwargs",
+        None,
+    )
+
+    assert callable(builder)
+    assert builder() == {
+        "train_on_responses_only": True,
+        "instruction_part": "<|im_start|>user\n",
+        "response_part": "<|im_start|>assistant\n",
+        "force_match": True,
+        "last_response_only": True,
+    }
+
+
 def test_training_log_dir_is_isolated_under_each_output_dir() -> None:
     """Concurrent single-GPU runs must not overwrite each other's logs."""
     resolver = getattr(

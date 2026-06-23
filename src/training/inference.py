@@ -31,6 +31,8 @@ from src.data.dataset import (
 )
 from src.evaluation.metrics import (
     evaluate_structure_prediction,
+    inspect_generation_tokens,
+    summarize_generation_behavior,
     summarize_structure_predictions,
 )
 from src.evaluation.prompts import (
@@ -103,7 +105,7 @@ def generate_one(
     max_new_tokens: int = 256,
     temperature: float = 0.0,
     top_p: float = 1.0,
-) -> str:
+) -> tuple[str, dict[str, int | bool]]:
     """Generate one prediction from paired NMR spectrum images.
 
     Parameters
@@ -125,8 +127,8 @@ def generate_one(
 
     Returns
     -------
-    str
-        Decoded prediction string.
+    tuple[str, dict[str, int | bool]]
+        Decoded prediction and generation-behavior diagnostics.
     """
     if len(images) != 2:
         raise ValueError(f"Expected 2 images, but got {len(images)}.")
@@ -152,6 +154,18 @@ def generate_one(
     ).to("cuda")
 
     do_sample = temperature > 0
+    raw_eos_token_ids = getattr(model.generation_config, "eos_token_id", None)
+    if raw_eos_token_ids is None:
+        raw_eos_token_ids = tokenizer.eos_token_id
+    if raw_eos_token_ids is None:
+        raise ValueError("Tokenizer and model generation config have no EOS token.")
+    pad_token_id = tokenizer.pad_token_id
+    if pad_token_id is None:
+        pad_token_id = (
+            raw_eos_token_ids
+            if isinstance(raw_eos_token_ids, int)
+            else raw_eos_token_ids[0]
+        )
 
     output_ids = model.generate(
         **inputs,
@@ -160,10 +174,25 @@ def generate_one(
         temperature=temperature if do_sample else None,
         top_p=top_p if do_sample else None,
         use_cache=True,
+        eos_token_id=raw_eos_token_ids,
+        pad_token_id=pad_token_id,
     )
 
     input_len = inputs["input_ids"].shape[1]
     generated_ids = output_ids[:, input_len:]
+    generated_token_ids = generated_ids[0].detach().cpu().tolist()
+
+    if isinstance(raw_eos_token_ids, int):
+        eos_token_ids = {raw_eos_token_ids}
+    else:
+        eos_token_ids = {
+            int(token_id) for token_id in (raw_eos_token_ids or [])
+        }
+    generation_trace = inspect_generation_tokens(
+        generated_token_ids,
+        eos_token_ids=eos_token_ids,
+        max_new_tokens=max_new_tokens,
+    )
 
     pred = tokenizer.batch_decode(
         generated_ids,
@@ -171,7 +200,7 @@ def generate_one(
         clean_up_tokenization_spaces=False,
     )[0]
 
-    return pred.strip()
+    return pred.strip(), generation_trace
 
 
 def main(config: dict[str, Any]) -> None:
@@ -216,6 +245,8 @@ def main(config: dict[str, Any]) -> None:
 
     n_errors = 0
     metric_rows: list[dict[str, Any]] = []
+    predictions: list[str] = []
+    generation_traces: list[dict[str, int | bool]] = []
 
     iterator = enumerate(test_ds)
     if max_samples is not None:
@@ -252,7 +283,7 @@ def main(config: dict[str, Any]) -> None:
 
             # --- generate ---
             try:
-                pred = generate_one(
+                pred, generation_trace = generate_one(
                     model=model,
                     tokenizer=tokenizer,
                     images=images,
@@ -263,8 +294,17 @@ def main(config: dict[str, Any]) -> None:
                 )
             except Exception:
                 pred = ""
+                generation_trace = {
+                    "generated_token_count": 0,
+                    "generation_terminated_by_eos": False,
+                    "generation_hit_max_tokens": False,
+                    "generation_repeated_4gram": False,
+                }
                 n_errors += 1
                 traceback.print_exc()
+
+            predictions.append(pred)
+            generation_traces.append(generation_trace)
 
             # --- scoring ---
             structure_metrics = evaluate_structure_prediction(
@@ -290,6 +330,7 @@ def main(config: dict[str, Any]) -> None:
                 "prompt": prompt,
                 "prediction": pred,
                 "label": label,
+                **generation_trace,
                 **structure_metrics,
             }
 
@@ -298,6 +339,9 @@ def main(config: dict[str, Any]) -> None:
     # ---- 6. Report -------------------------------------------------------
     print(f"Saved predictions to: {output_path}")
     summary = summarize_structure_predictions(metric_rows)
+    summary.update(
+        summarize_generation_behavior(predictions, generation_traces)
+    )
     summary["generation_errors"] = n_errors
     summary["prompt_template_index"] = prompt_template_index
     summary["rule_context_enabled"] = rule_context_enabled

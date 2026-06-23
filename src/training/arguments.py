@@ -6,6 +6,22 @@ from pathlib import Path
 from typing import Any
 
 
+def build_response_only_collator_kwargs() -> dict[str, Any]:
+    """Return Qwen3-VL boundaries for assistant-only supervision.
+
+    These markers match the active Qwen3-VL chat template. Keeping response
+    masking mandatory prevents long NMR prompts and peak tables from
+    dominating the language-model loss.
+    """
+    return {
+        "train_on_responses_only": True,
+        "instruction_part": "<|im_start|>user\n",
+        "response_part": "<|im_start|>assistant\n",
+        "force_match": True,
+        "last_response_only": True,
+    }
+
+
 def build_vision_collator_kwargs(config: dict[str, Any]) -> dict[str, Any]:
     """Build image-resize arguments for ``UnslothVisionDataCollator``."""
     image_size = config.get("image_size")
