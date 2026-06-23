@@ -64,3 +64,48 @@ def test_build_paired_jsonl_end_to_end(tmp_path: Path) -> None:
     assert {sample["molecular_formula"] for sample in samples} == {"C2H6O", "C2H7N"}
     assert (out_dir / "manifest.csv").exists()
     assert (out_dir / "train_ids.txt").exists()
+
+
+def test_index_filters_molecule_policy_and_normalizes_isotopes(
+    tmp_path: Path,
+) -> None:
+    """Index keys should exclude salts, ions, radicals and isotope labels."""
+    csv_path = tmp_path / "raw.csv"
+    db_path = tmp_path / "candidates.sqlite"
+    out_dir = tmp_path / "paired"
+    rows = [
+        _raw_row(
+            "[13CH3]CO",
+            "1H NMR",
+            "[(1.2, 't', [], '3H')]",
+        ),
+        _raw_row("CCO", "13C NMR", "[(58.1,), (18.2,)]"),
+        _raw_row("CCN", "1H NMR", "[(1.1, 't', [], '3H')]"),
+        _raw_row("CCN", "13C NMR", "[(45.0,), (18.0,)]"),
+        _raw_row("C[NH3+].[Cl-]", "1H NMR", "[(2.0, 's', [], '3H')]"),
+        _raw_row("C[NH3+].[Cl-]", "13C NMR", "[(25.0,)]"),
+        _raw_row("[NH4+]", "1H NMR", "[(4.0, 's', [], '4H')]"),
+        _raw_row("[NH4+]", "13C NMR", "[(1.0,)]"),
+        _raw_row("[CH3]", "1H NMR", "[(0.5, 's', [], '3H')]"),
+        _raw_row("[CH3]", "13C NMR", "[(0.0,)]"),
+    ]
+    pd.DataFrame(rows).to_csv(csv_path, index=False)
+
+    report = index_raw_csv(csv_path, db_path, chunksize=3)
+    summary = build_jsonl_from_index(db_path, out_dir, seed=1)
+    samples = [
+        json.loads(line)
+        for line in (out_dir / "samples.jsonl").read_text(
+            encoding="utf-8"
+        ).splitlines()
+    ]
+
+    assert report["candidate_rows"] == 4
+    assert report["isotope_normalized_rows"] == 1
+    assert report["molecule_rejection_counts"] == {
+        "multiple_components": 2,
+        "nonzero_formal_charge": 2,
+        "radical": 2,
+    }
+    assert summary["jsonl_samples_written"] == 2
+    assert {sample["canonical_smiles"] for sample in samples} == {"CCO", "CCN"}

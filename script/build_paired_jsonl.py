@@ -12,6 +12,7 @@ streams the raw CSV into a small SQLite candidate index, selects one paired
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import json
 import os
 import sqlite3
@@ -32,8 +33,7 @@ from src.data.manifest import (
     write_split_files,
 )
 from src.data.molecules import (
-    canonicalize_smiles,
-    has_only_allowed_elements,
+    inspect_dataset_molecule,
     molecule_formula,
 )
 from src.data.utils import process_13c_peaks, process_1h_peaks, safe_literal_eval
@@ -141,6 +141,9 @@ def index_raw_csv(
     candidates = 0
     invalid_smiles = 0
     unsupported_nmr = 0
+    isotope_normalized_rows = 0
+    isotope_labels_removed = 0
+    molecule_rejection_counts: Counter[str] = Counter()
 
     insert_sql = """
         INSERT INTO candidates VALUES (
@@ -164,10 +167,16 @@ def index_raw_csv(
                 unsupported_nmr += 1
                 continue
 
-            canonical = canonicalize_smiles(row["SMILES"])
-            if canonical is None:
-                invalid_smiles += 1
+            inspection = inspect_dataset_molecule(row["SMILES"])
+            if not inspection.accepted:
+                if "invalid_smiles" in inspection.violations:
+                    invalid_smiles += 1
+                molecule_rejection_counts.update(inspection.violations)
                 continue
+            canonical = inspection.canonical_smiles
+            if inspection.isotope_label_count:
+                isotope_normalized_rows += 1
+                isotope_labels_removed += inspection.isotope_label_count
 
             batch.append(
                 (
@@ -207,6 +216,9 @@ def index_raw_csv(
         "candidate_rows": candidates,
         "invalid_smiles": invalid_smiles,
         "unsupported_nmr_rows": unsupported_nmr,
+        "isotope_normalized_rows": isotope_normalized_rows,
+        "isotope_labels_removed": isotope_labels_removed,
+        "molecule_rejection_counts": dict(sorted(molecule_rejection_counts.items())),
     }
 
 
@@ -244,8 +256,10 @@ def raw_pair_to_sample(
     c_row: dict[str, Any],
 ) -> dict[str, Any] | None:
     """Build one normalized sample from paired raw candidate rows."""
-    if not has_only_allowed_elements(canonical):
+    inspection = inspect_dataset_molecule(canonical)
+    if not inspection.accepted:
         return None
+    canonical = inspection.canonical_smiles
     try:
         h_raw = safe_literal_eval(h_row["processed"])
         c_raw = safe_literal_eval(c_row["processed"])

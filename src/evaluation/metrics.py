@@ -11,7 +11,7 @@ from rdkit.Chem import rdMolDescriptors
 from rdkit.Chem.Scaffolds import MurckoScaffold
 
 from src.data.functional_groups import FUNCTIONAL_GROUP_SMARTS, functional_groups
-from src.data.molecules import ALLOWED_ELEMENT_SYMBOLS, canonicalize_smiles
+from src.data.molecules import canonicalize_smiles, inspect_dataset_molecule
 from src.evaluation.generation_metrics import (
     inspect_generation_tokens,
     summarize_generation_behavior,
@@ -151,24 +151,25 @@ def _ring_scaffold(smiles: str | None) -> str | None:
 
 def _domain_validity(smiles: str | None) -> dict[str, bool]:
     """Check whether a valid SMILES satisfies the project molecule policy."""
-    canonical = canonicalize_smiles(smiles)
-    mol = Chem.MolFromSmiles(canonical) if canonical is not None else None
-    if mol is None:
-        return {
-            "has_only_allowed_elements": False,
-            "is_single_component": False,
-            "is_neutral": False,
-            "domain_valid_smiles": False,
-        }
-    elements = {atom.GetSymbol() for atom in mol.GetAtoms()}
-    allowed = elements <= ALLOWED_ELEMENT_SYMBOLS
-    single_component = len(Chem.GetMolFrags(mol)) == 1
-    neutral = sum(atom.GetFormalCharge() for atom in mol.GetAtoms()) == 0
+    inspection = inspect_dataset_molecule(smiles)
+    valid = inspection.canonical_smiles is not None
+    allowed = valid and not any(
+        violation.startswith("unsupported_elements:")
+        for violation in inspection.violations
+    )
+    single_component = valid and inspection.component_count == 1
+    neutral = valid and inspection.formal_charge == 0
+    no_radicals = valid and inspection.radical_electron_count == 0
+    no_isotope_labels = valid and inspection.isotope_label_count == 0
     return {
         "has_only_allowed_elements": allowed,
         "is_single_component": single_component,
         "is_neutral": neutral,
-        "domain_valid_smiles": allowed and single_component and neutral,
+        "has_no_radicals": no_radicals,
+        "has_no_isotope_labels": no_isotope_labels,
+        "domain_valid_smiles": (
+            inspection.accepted and no_isotope_labels
+        ),
     }
 
 

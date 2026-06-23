@@ -29,6 +29,17 @@ creates the nested clean subsets. The allowed symbols are
 `H C N O F Si P S Cl Br I`; unsupported molecules are excluded during this
 build rather than repaired in a later migration step.
 
+The same build also rejects disconnected salts, structures with non-zero net
+formal charge, and radicals. Isotope labels are removed before canonical
+SMILES grouping; net-neutral charge-separated representations remain valid.
+Inspect `index_report.json` for `molecule_rejection_counts`,
+`isotope_normalized_rows`, and `isotope_labels_removed`.
+
+After changing this molecular policy, rebuild from the raw CSV without
+`--reuse-index`. Isotope normalization changes canonical keys and sample IDs,
+so an old SQLite index, JSONL, subset IDs, candidate sidecars, and rendered
+images are not compatible with the rebuilt dataset.
+
 ## 2. Curate Nested Subsets
 
 ```bash
@@ -68,8 +79,13 @@ covers the full experiment matrix.
 python script/pre_render_jsonl_images.py dataset/paired_jsonl_full \
   --splits clean_50k_train clean_50k_val clean_50k_test \
   --image-size 768 432 \
-  --num-workers 32
+  --num-workers 32 \
+  --overwrite
 ```
+
+`--overwrite` is required for the first render after a molecular-policy
+rebuild because a stable sample ID may now resolve to a different best paired
+record after isotope-labelled and unlabelled candidates are merged.
 
 ## 4. CUDA Smoke Test
 

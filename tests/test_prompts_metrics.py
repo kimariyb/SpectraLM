@@ -219,18 +219,24 @@ def test_structure_summary_upgrades_legacy_prediction_rows() -> None:
     assert summary["output_format_compliance_rate"] == 1.0
 
 
-def test_domain_validity_rejects_unsupported_charged_and_disconnected_outputs() -> None:
+def test_domain_validity_enforces_the_dataset_molecule_policy() -> None:
     """Domain validity should be stricter than generic RDKit parsing."""
     unsupported = evaluate_structure_prediction("C[Ge](C)(C)C", "CCO")
     charged = evaluate_structure_prediction("C[NH3+]", "CCN")
     disconnected = evaluate_structure_prediction("CC.O", "CCO")
+    radical = evaluate_structure_prediction("[CH3]", "C")
+    isotope = evaluate_structure_prediction("[13CH3]CO", "CCO")
+    neutral_nitro = evaluate_structure_prediction("C[N+](=O)[O-]", "CCO")
 
-    for row in (unsupported, charged, disconnected):
+    for row in (unsupported, charged, disconnected, radical, isotope):
         assert row["valid_smiles"] is True
         assert row["domain_valid_smiles"] is False
     assert unsupported["has_only_allowed_elements"] is False
     assert charged["is_neutral"] is False
     assert disconnected["is_single_component"] is False
+    assert radical["has_no_radicals"] is False
+    assert isotope["has_no_isotope_labels"] is False
+    assert neutral_nitro["domain_valid_smiles"] is True
 
 
 def test_structure_metrics_can_include_rule_consistency(ethanol_sample) -> None:

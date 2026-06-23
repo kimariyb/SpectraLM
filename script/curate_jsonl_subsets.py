@@ -17,10 +17,17 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
 import random
+import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
+
+# Allow running from project root without PYTHONPATH.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from src.data.molecules import inspect_dataset_molecule
 
 
 DEFAULT_SUBSET_SIZES = [5_000, 10_000, 25_000, 50_000]
@@ -78,6 +85,15 @@ def _row_passes_filters(
     """Apply manifest-level QC filters to one row."""
     if row.get("qc_status") != "pass":
         return False, "manifest_qc_fail"
+
+    inspection = inspect_dataset_molecule(row.get("canonical_smiles"))
+    if not inspection.accepted:
+        return False, inspection.violations[0]
+    if (
+        inspection.isotope_label_count
+        or _to_int(row.get("isotope_label_count")) > 0
+    ):
+        return False, "isotope_labeled_structure"
 
     heavy = _to_int(row.get("heavy_atom_count"))
     h_peaks = _to_int(row.get("h_peak_count"))

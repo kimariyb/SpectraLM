@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from functools import lru_cache
 import re
 from typing import Any
@@ -17,6 +18,92 @@ ALLOWED_ELEMENT_SYMBOLS = frozenset(
     {"H", "C", "N", "O", "F", "Si", "P", "S", "Cl", "Br", "I"}
 )
 _FORMULA_ELEMENT_PATTERN = re.compile(r"[A-Z][a-z]?")
+
+
+@dataclass(frozen=True)
+class DatasetMoleculeInspection:
+    """Normalized structure and dataset-policy audit measurements."""
+
+    canonical_smiles: str | None
+    component_count: int
+    formal_charge: int
+    radical_electron_count: int
+    isotope_label_count: int
+    violations: tuple[str, ...]
+
+    @property
+    def accepted(self) -> bool:
+        """Return whether the structure satisfies the dataset policy."""
+        return self.canonical_smiles is not None and not self.violations
+
+
+@lru_cache(maxsize=8192)
+def inspect_dataset_molecule(smiles: str | None) -> DatasetMoleculeInspection:
+    """Normalize and audit a structure for inclusion in the NMR dataset.
+
+    Isotope labels are removed before canonicalization. Disconnected
+    structures, non-zero total formal charge, radicals, and unsupported
+    elements are reported as violations. Net-neutral charge-separated
+    representations remain valid.
+
+    Parameters
+    ----------
+    smiles
+        Raw molecular SMILES.
+
+    Returns
+    -------
+    DatasetMoleculeInspection
+        Isotope-free canonical structure and auditable policy measurements.
+    """
+    if not smiles:
+        return DatasetMoleculeInspection(None, 0, 0, 0, 0, ("invalid_smiles",))
+    try:
+        mol = Chem.MolFromSmiles(str(smiles))
+    except Exception:
+        mol = None
+    if mol is None:
+        return DatasetMoleculeInspection(None, 0, 0, 0, 0, ("invalid_smiles",))
+
+    component_count = len(Chem.GetMolFrags(mol))
+    formal_charge = int(Chem.GetFormalCharge(mol))
+    radical_electron_count = sum(
+        int(atom.GetNumRadicalElectrons()) for atom in mol.GetAtoms()
+    )
+    isotope_label_count = sum(
+        int(atom.GetIsotope() != 0) for atom in mol.GetAtoms()
+    )
+    element_symbols = {atom.GetSymbol() for atom in mol.GetAtoms()}
+    unsupported = sorted(element_symbols - ALLOWED_ELEMENT_SYMBOLS)
+
+    violations: list[str] = []
+    if component_count != 1:
+        violations.append("multiple_components")
+    if formal_charge != 0:
+        violations.append("nonzero_formal_charge")
+    if radical_electron_count != 0:
+        violations.append("radical")
+    if unsupported:
+        violations.append(f"unsupported_elements:{','.join(unsupported)}")
+
+    for atom in mol.GetAtoms():
+        atom.SetIsotope(0)
+    try:
+        Chem.SanitizeMol(mol)
+        canonical = Chem.MolToSmiles(mol, canonical=True)
+    except Exception:
+        canonical = None
+        if "invalid_smiles" not in violations:
+            violations.insert(0, "invalid_smiles")
+
+    return DatasetMoleculeInspection(
+        canonical_smiles=canonical,
+        component_count=component_count,
+        formal_charge=formal_charge,
+        radical_electron_count=radical_electron_count,
+        isotope_label_count=isotope_label_count,
+        violations=tuple(violations),
+    )
 
 
 def sample_smiles(sample: dict[str, Any]) -> str | None:

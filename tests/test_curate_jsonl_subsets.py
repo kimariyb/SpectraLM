@@ -31,13 +31,16 @@ def _manifest_row(
     c_peaks: int = 4,
     solvent: str = "CDCl3",
     qc_status: str = "pass",
+    canonical_smiles: str = "CCO",
+    isotope_label_count: int = 0,
 ) -> dict[str, str]:
     return {
         "id": sample_id,
         "split": split,
         "qc_status": qc_status,
         "qc_reason": "",
-        "canonical_smiles": f"C{sample_id}",
+        "canonical_smiles": canonical_smiles,
+        "isotope_label_count": str(isotope_label_count),
         "molecular_formula": "C2H6O",
         "murcko_scaffold": scaffold,
         "heavy_atom_count": str(heavy_atoms),
@@ -63,6 +66,48 @@ def test_filter_rows_rejects_out_of_range_manifest_rows() -> None:
     assert [row["id"] for row in kept] == ["ok"]
     assert rejected["too_many_heavy_atoms"] == 1
     assert rejected["too_few_1h_peaks"] == 1
+
+
+def test_filter_rows_rechecks_legacy_manifest_molecule_policy() -> None:
+    """Old pass-status rows must not bypass current structure requirements."""
+    rows = [
+        _manifest_row("ok", "train", "s1"),
+        _manifest_row(
+            "salt",
+            "train",
+            "s2",
+            canonical_smiles="C[NH3+].[Cl-]",
+        ),
+        _manifest_row(
+            "charged",
+            "train",
+            "s3",
+            canonical_smiles="[NH4+]",
+        ),
+        _manifest_row(
+            "radical",
+            "train",
+            "s4",
+            canonical_smiles="[CH3]",
+        ),
+        _manifest_row(
+            "isotope",
+            "train",
+            "s5",
+            canonical_smiles="CCO",
+            isotope_label_count=1,
+        ),
+    ]
+
+    kept, rejected = filter_rows(rows)
+
+    assert [row["id"] for row in kept] == ["ok"]
+    assert rejected == {
+        "multiple_components": 1,
+        "nonzero_formal_charge": 1,
+        "radical": 1,
+        "isotope_labeled_structure": 1,
+    }
 
 
 def test_build_subsets_writes_nested_scaling_id_files(tmp_path: Path) -> None:
