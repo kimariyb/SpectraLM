@@ -11,14 +11,9 @@ build_subsets = curation.build_subsets
 filter_rows = curation.filter_rows
 
 
-def test_default_subset_sizes_match_50k_scaling_design() -> None:
-    """Default curation should materialize the approved nested scaling sets."""
-    assert getattr(curation, "DEFAULT_SUBSET_SIZES", None) == [
-        5_000,
-        10_000,
-        25_000,
-        50_000,
-    ]
+def test_default_subset_size_matches_current_10k_study() -> None:
+    """Default curation should materialize only the current study cohort."""
+    assert getattr(curation, "DEFAULT_SUBSET_SIZES", None) == [10_000]
 
 
 def _manifest_row(
@@ -138,3 +133,38 @@ def test_build_subsets_writes_nested_scaling_id_files(tmp_path: Path) -> None:
     assert train_4[:2] == train_2
     assert len(val_2) == 2
     assert summary["subsets"]["clean_2"]["train"]["samples"] == 2
+
+
+def test_total_size_and_val_fraction_build_exact_9k_1k_protocol(
+    tmp_path: Path,
+) -> None:
+    """A 10k cohort should contain 9k train and 1k validation samples."""
+    rows = [
+        _manifest_row(f"train-{idx}", "train", f"train-{idx}")
+        for idx in range(9000)
+    ]
+    rows.extend(
+        _manifest_row(f"val-{idx}", "val", f"val-{idx}")
+        for idx in range(1000)
+    )
+    rows.extend(
+        _manifest_row(f"test-{idx}", "test", f"test-{idx}")
+        for idx in range(5000)
+    )
+
+    summary = build_subsets(
+        rows,
+        tmp_path,
+        subset_sizes=[10_000],
+        val_fraction=0.1,
+        test_size=5_000,
+        seed=3407,
+    )
+
+    cohort = summary["subsets"]["clean_10k"]
+    assert cohort["train"]["samples"] == 9000
+    assert cohort["val"]["samples"] == 1000
+    assert cohort["test"]["samples"] == 5000
+    assert cohort["requested_total_size"] == 10000
+    assert cohort["requested_train_size"] == 9000
+    assert cohort["requested_val_size"] == 1000

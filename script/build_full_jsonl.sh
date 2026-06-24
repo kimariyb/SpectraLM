@@ -4,8 +4,8 @@ set -euo pipefail
 CSV_PATH="${1:-dataset/NMRexp_10to24_1_1004.csv}"
 OUT_DIR="${2:-dataset/paired_jsonl_full}"
 DB_PATH="${3:-${OUT_DIR}/candidates.sqlite}"
-SUBSET_SIZES="${SUBSET_SIZES:-5000 10000 25000 50000}"
-VAL_SIZE="${VAL_SIZE:-5000}"
+SUBSET_SIZES="${SUBSET_SIZES:-10000}"
+VAL_FRACTION="${VAL_FRACTION:-0.1}"
 TEST_SIZE="${TEST_SIZE:-5000}"
 
 python script/build_paired_jsonl.py "${CSV_PATH}" \
@@ -20,7 +20,7 @@ python script/build_paired_jsonl.py "${CSV_PATH}" \
 
 python script/curate_jsonl_subsets.py "${OUT_DIR}" \
   --subset-sizes ${SUBSET_SIZES} \
-  --val-size "${VAL_SIZE}" \
+  --val-fraction "${VAL_FRACTION}" \
   --test-size "${TEST_SIZE}" \
   --prefix clean \
   --seed 3407 \

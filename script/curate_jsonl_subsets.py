@@ -30,7 +30,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.data.molecules import inspect_dataset_molecule
 
 
-DEFAULT_SUBSET_SIZES = [5_000, 10_000, 25_000, 50_000]
+DEFAULT_SUBSET_SIZES = [10_000]
 
 
 def _read_manifest(path: str | Path) -> list[dict[str, Any]]:
@@ -234,6 +234,7 @@ def build_subsets(
     *,
     subset_sizes: list[int],
     val_size: int = 5000,
+    val_fraction: float | None = None,
     test_size: int = 5000,
     prefix: str = "clean",
     seed: int = 3407,
@@ -246,6 +247,8 @@ def build_subsets(
     solvent_policy: str = "any",
 ) -> dict[str, Any]:
     """Build named subset id files from manifest rows."""
+    if val_fraction is not None and not 0.0 < float(val_fraction) < 1.0:
+        raise ValueError("val_fraction must be between 0 and 1")
     out_path = Path(out_dir)
     out_path.mkdir(parents=True, exist_ok=True)
 
@@ -286,16 +289,30 @@ def build_subsets(
         "subsets": {},
     }
 
-    shared_val = ranked["val"][: min(val_size, len(ranked["val"]))]
     shared_test = ranked["test"][: min(test_size, len(ranked["test"]))]
 
     for requested_size in sorted(set(int(size) for size in subset_sizes)):
-        selected_train = ranked["train"][: min(requested_size, len(ranked["train"]))]
+        if val_fraction is None:
+            requested_train_size = requested_size
+            requested_val_size = int(val_size)
+        else:
+            requested_val_size = int(
+                round(requested_size * float(val_fraction))
+            )
+            requested_train_size = requested_size - requested_val_size
+        selected_train = ranked["train"][: min(
+            requested_train_size,
+            len(ranked["train"]),
+        )]
+        selected_val = ranked["val"][: min(
+            requested_val_size,
+            len(ranked["val"]),
+        )]
         name = f"{prefix}_{requested_size // 1000}k" if requested_size >= 1000 else f"{prefix}_{requested_size}"
 
         selected = {
             "train": selected_train,
-            "val": shared_val,
+            "val": selected_val,
             "test": shared_test,
         }
         for split, rows in selected.items():
@@ -303,8 +320,13 @@ def build_subsets(
             _write_csv(out_path / f"{name}_{split}_manifest.csv", rows)
 
         summary["subsets"][name] = {
+            "requested_total_size": requested_size,
+            "requested_train_size": requested_train_size,
+            "requested_val_size": requested_val_size,
+            **{
             split: summarize_rows(rows)
             for split, rows in selected.items()
+            },
         }
 
     (out_path / "curation_summary.json").write_text(
@@ -329,6 +351,7 @@ def main() -> None:
         default=DEFAULT_SUBSET_SIZES,
     )
     parser.add_argument("--val-size", type=int, default=5000)
+    parser.add_argument("--val-fraction", type=float, default=None)
     parser.add_argument("--test-size", type=int, default=5000)
     parser.add_argument("--prefix", default="clean")
     parser.add_argument("--seed", type=int, default=3407)
@@ -353,6 +376,7 @@ def main() -> None:
         out_dir,
         subset_sizes=args.subset_sizes,
         val_size=args.val_size,
+        val_fraction=args.val_fraction,
         test_size=args.test_size,
         prefix=args.prefix,
         seed=args.seed,
