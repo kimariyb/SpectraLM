@@ -8,14 +8,14 @@ and an optional molecular formula.
 
 The repository has one supported research workflow:
 
-1. Build a paired, scaffold-disjoint JSONL dataset from the raw CSV.
-2. Curate nested 5k, 10k, 25k, and 50k training subsets.
-3. Pre-render `512 x 288` spectrum images.
-4. Build formula-matched candidates for the ranking auxiliary task.
-5. Train and evaluate structure, rule-context, and multitask experiments.
+1. Curate a 10k development cohort: 9,000 train and 1,000 validation samples.
+2. Keep a separate scaffold-disjoint test set of up to 5,000 samples.
+3. Build formula-matched hard negatives for candidate-ranking supervision.
+4. Train one adapter sequentially: multitask Stage 1, then structure-only Stage 2.
+5. Evaluate both greedy prediction and 32-candidate formula-constrained inference.
 
 The complete commands and experiment matrix are documented in
-[`docs/experiments_50k.md`](docs/experiments_50k.md). The NMR interpretation
+[`docs/experiments.md`](docs/experiments.md). The NMR interpretation
 policy is documented in [`docs/nmr_1d_rulebook.md`](docs/nmr_1d_rulebook.md).
 
 ## Main Commands
@@ -28,14 +28,19 @@ bash script/build_full_jsonl.sh \
   dataset/paired_jsonl_full
 
 python script/pre_render_jsonl_images.py dataset/paired_jsonl_full \
-  --splits clean_50k_train clean_50k_val clean_50k_test \
+  --splits clean_10k_train clean_10k_val clean_10k_test \
   --image-size 512 288 \
   --num-workers 32
 
-CUDA_VISIBLE_DEVICES=0 bash script/run_train_cuda_48g.sh \
-  configs/train_cuda_48g_smoke.yaml
-
 bash script/run_experiment.sh list
+bash script/run_experiment.sh prepare split-10k
+bash script/run_experiment.sh prepare candidates-10k-train
+bash script/run_experiment.sh prepare candidates-10k-val
+CUDA_VISIBLE_DEVICES=0 bash script/run_experiment.sh train smoke
+CUDA_VISIBLE_DEVICES=0 bash script/run_experiment.sh train stage1-10k
+CUDA_VISIBLE_DEVICES=0 bash script/run_experiment.sh train stage2-10k
+CUDA_VISIBLE_DEVICES=0 bash script/run_experiment.sh infer stage2-10k
+CUDA_VISIBLE_DEVICES=0 bash script/run_experiment.sh infer constrained-10k
 ```
 
 ## Repository Layout
@@ -46,7 +51,7 @@ bash script/run_experiment.sh list
 - `src/training/`: CUDA training and inference entrypoints.
 - `src/evaluation/`: prompts and evaluation metrics.
 - `script/`: supported preprocessing and experiment commands.
-- `configs/`: smoke, baseline, ablation, rule, and multitask configurations.
+- `configs/`: the smoke and two-stage 10k experiment configurations.
 - `rules/nmr_1d.yaml`: machine-readable NMR rule library.
 
 ## Verification

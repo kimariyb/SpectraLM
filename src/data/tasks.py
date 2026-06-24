@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import json
 from typing import Any, Mapping, Sequence
 
@@ -14,6 +15,7 @@ from src.data.molecules import (
 )
 from src.data.spectral_regions import classify_spectral_regions
 from src.data.modalities import FULL, validate_input_configuration
+from src.data.modalities import IMAGE_ONLY, PEAK_TABLE_ONLY
 from src.evaluation.prompts import (
     build_structure_prompt,
     select_structure_prompt,
@@ -75,6 +77,28 @@ def normalize_task_weights(
     return {task: weight / total for task, weight in positive.items()}
 
 
+def select_weighted_task(
+    sample_id: str,
+    *,
+    seed: int,
+    weights: Mapping[str, float],
+) -> str:
+    """Select one reproducible weighted task for a sample identifier."""
+    normalized = normalize_task_weights(weights)
+    digest = hashlib.sha256(
+        f"{seed}:{sample_id}:task".encode("utf-8")
+    ).digest()
+    draw = int.from_bytes(digest[:8], byteorder="big") / 2**64
+    cumulative = 0.0
+    selected = next(iter(normalized))
+    for task, probability in normalized.items():
+        selected = task
+        cumulative += probability
+        if draw < cumulative:
+            break
+    return selected
+
+
 def _task_prompt(
     sample: dict[str, Any],
     template: str,
@@ -85,6 +109,67 @@ def _task_prompt(
     input_mode: str,
 ) -> str:
     return build_structure_prompt(
+        sample,
+        template,
+        include_formula=include_formula,
+        include_rule_context=include_rule_context,
+        max_rule_evidence=max_rule_evidence,
+        input_mode=input_mode,
+    )
+
+
+def _evidence_description(input_mode: str) -> str:
+    """Describe only the evidence available in one modality condition."""
+    if input_mode == FULL:
+        return "Use both ordered NMR images and the numerical peak tables."
+    if input_mode == IMAGE_ONLY:
+        return (
+            "Use the two ordered NMR images. "
+            "No numerical peak tables are available."
+        )
+    if input_mode == PEAK_TABLE_ONLY:
+        return (
+            "Use the numerical 1H and 13C peak tables. "
+            "No spectrum images are available."
+        )
+    raise ValueError(f"Unsupported auxiliary-task input mode: {input_mode}")
+
+
+def build_candidate_ranking_prompt(
+    sample: dict[str, Any],
+    candidates: Sequence[str],
+    *,
+    include_formula: bool = True,
+    include_rule_context: bool = False,
+    max_rule_evidence: int = 12,
+    input_mode: str = FULL,
+) -> str:
+    """Build a candidate-ranking prompt without accessing a reference label."""
+    input_mode = validate_input_configuration(
+        input_mode,
+        include_formula=include_formula,
+        include_rule_context=include_rule_context,
+        task_names=(CANDIDATE_RANKING,),
+    )
+    canonical_candidates: list[str] = []
+    for candidate in candidates:
+        canonical = canonicalize_smiles(candidate)
+        if canonical is not None and canonical not in canonical_candidates:
+            canonical_candidates.append(canonical)
+    if not canonical_candidates:
+        raise ValueError("Candidate ranking requires at least one valid candidate.")
+    candidate_lines = "\n".join(
+        f"{index}. {candidate}"
+        for index, candidate in enumerate(canonical_candidates, start=1)
+    )
+    template = (
+        f"{_evidence_description(input_mode)} Select the best candidate "
+        "structure using the available spectral evidence.\n\n"
+        "{peak_tables}\n\nCandidates:\n"
+        f"{candidate_lines}\n\n"
+        "Return only the canonical SMILES of the best candidate."
+    )
+    return _task_prompt(
         sample,
         template,
         include_formula=include_formula,
@@ -174,8 +259,7 @@ def build_task_example(
     if task == FUNCTIONAL_GROUP_RECOGNITION:
         labels = ", ".join(label for label, _ in FUNCTIONAL_GROUP_SMARTS)
         template = (
-            "The first image is a 1H NMR spectrum and the second image is a "
-            "13C NMR spectrum. Use the images and peak tables below to identify "
+            f"{_evidence_description(input_mode)} Identify "
             "the functional groups present in the molecule. Choose labels only "
             f"from this ontology: {labels}.\n\n{{peak_tables}}\n\n"
             "Return only one sorted JSON array of unique functional group labels."
@@ -199,8 +283,8 @@ def build_task_example(
 
     if task == SPECTRAL_REGION_CLASSIFICATION:
         template = (
-            "The first image is a 1H NMR spectrum and the second image is a "
-            "13C NMR spectrum. Classify all observed signals into the controlled "
+            f"{_evidence_description(input_mode)} Classify all observed signals "
+            "into the controlled "
             "overlapping spectral region labels represented by the peak tables."
             "\n\n{peak_tables}\n\nReturn only a JSON object with keys \"1H\" "
             "and \"13C\" and sorted unique label arrays."
@@ -229,21 +313,11 @@ def build_task_example(
             canonical_candidates.append(canonical)
     if target not in canonical_candidates:
         raise ValueError("Candidate set does not contain the target structure.")
-    candidate_lines = "\n".join(
-        f"{index}. {candidate}"
-        for index, candidate in enumerate(canonical_candidates, start=1)
-    )
-    template = (
-        "The first image is a 1H NMR spectrum and the second image is a 13C "
-        "NMR spectrum. Select the best candidate structure using all visual "
-        "and tabulated spectral evidence.\n\n{peak_tables}\n\nCandidates:\n"
-        f"{candidate_lines}\n\nReturn only the canonical SMILES of the best candidate."
-    )
     return TaskExample(
         task=task,
-        prompt=_task_prompt(
+        prompt=build_candidate_ranking_prompt(
             sample,
-            template,
+            canonical_candidates,
             include_formula=include_formula,
             include_rule_context=include_rule_context,
             max_rule_evidence=max_rule_evidence,

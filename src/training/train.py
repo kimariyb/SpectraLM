@@ -2,7 +2,7 @@
 
 Usage::
 
-    python -m src.training.train configs/train_cuda_48g_jsonl.yaml
+    python -m src.training.train configs/train_smoke.yaml
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ from torch.utils.data import Subset
 from transformers import EarlyStoppingCallback
 from unsloth import FastVisionModel
 from unsloth.trainer import UnslothVisionDataCollator
+from peft import PeftModel
 from src.config import TrainingLoggerCallback, load_config
 from src.logger import TrainingLogger
 from src.data.dataset import load_lazy_nmr_dataset
@@ -31,6 +32,7 @@ from src.training.response_masking import (
     assistant_response_text,
     validate_response_only_batch,
 )
+from src.training.model_setup import setup_lora_model
 from trl import SFTConfig, SFTTrainer
 
 
@@ -76,18 +78,31 @@ def main(config: dict[str, Any]) -> None:
         "missing_image_policy": config.get("missing_image_policy", "error"),
         "input_mode": input_mode,
         "prompt_template_index": config.get("prompt_template_index"),
+        "target_stereochemistry": config.get(
+            "target_stereochemistry", "preserve"
+        ),
+    }
+    train_dataset_kwargs = {
+        **dataset_kwargs,
+        "input_mode_weights": config.get("input_mode_weights"),
+    }
+    eval_dataset_kwargs = {
+        **dataset_kwargs,
+        "input_mode_weights": config.get(
+            "eval_input_mode_weights", {"full": 1.0}
+        ),
     }
     train_ds = load_lazy_nmr_dataset(
         dataset_dir,
         split=train_split_name,
         candidate_sidecar_path=config.get("train_candidate_sidecar_path"),
-        **dataset_kwargs,
+        **train_dataset_kwargs,
     )
     eval_ds = load_lazy_nmr_dataset(
         dataset_dir,
         split=eval_split_name,
         candidate_sidecar_path=config.get("eval_candidate_sidecar_path"),
-        **dataset_kwargs,
+        **eval_dataset_kwargs,
     )
 
     train_ds = _limit_dataset(train_ds, config.get("max_train_samples"))
@@ -113,19 +128,11 @@ def main(config: dict[str, Any]) -> None:
     )
 
     # 3. Apply LoRA adapters
-    model = FastVisionModel.get_peft_model(
+    model = setup_lora_model(
         model,
-        finetune_vision_layers=True,
-        finetune_language_layers=True,
-        finetune_attention_modules=True,
-        finetune_mlp_modules=True,
-        r=config.get("lora_r", 16),
-        lora_alpha=config.get("lora_alpha", 16),
-        lora_dropout=float(config.get("lora_dropout", 0)),
-        bias="none",
-        random_state=seed,
-        use_rslora=False,
-        loftq_config=None,
+        config,
+        fast_vision_model=FastVisionModel,
+        peft_model_class=PeftModel,
     )
 
     # 4. Train
@@ -159,6 +166,7 @@ def main(config: dict[str, Any]) -> None:
         output_dir=training_log_dir(config),
         config={
             "model_name": Path(config.get("model_path")).name,
+            "initial_adapter_path": config.get("initial_adapter_path"),
             "learning_rate": sft_kwargs['learning_rate'],
             "num_train_epochs": sft_kwargs['num_train_epochs'],
             "per_device_train_batch_size": sft_kwargs["per_device_train_batch_size"],
@@ -173,6 +181,13 @@ def main(config: dict[str, Any]) -> None:
             **early_stopping_kwargs,
             "include_formula": config.get("include_formula", True),
             "input_mode": input_mode,
+            "input_mode_weights": config.get("input_mode_weights"),
+            "eval_input_mode_weights": config.get(
+                "eval_input_mode_weights", {"full": 1.0}
+            ),
+            "target_stereochemistry": config.get(
+                "target_stereochemistry", "preserve"
+            ),
             "prompt_template_index": config.get("prompt_template_index"),
             "rule_context_enabled": rule_context_enabled,
             "max_rule_evidence": int(config.get("max_rule_evidence", 12)),

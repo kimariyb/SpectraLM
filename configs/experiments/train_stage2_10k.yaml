@@ -1,7 +1,7 @@
-# Data-scaling run: 25k formula-conditioned samples on one 48GB CUDA GPU.
-
+# Stage 2: continue the Stage 1 adapter with structure-only supervision.
 model_path: /mnt/data/kimariyb/models/Qwen3.5-9B
-max_seq_length: 4096
+initial_adapter_path: outputs/experiments/multitask/stage1-10k-seed3407/best_model
+max_seq_length: 8192
 load_in_4bit: true
 use_gradient_checkpointing: false
 
@@ -9,23 +9,32 @@ dataset_dir: dataset/paired_jsonl_full
 image_backend: pre_rendered
 rendered_image_dir: dataset/paired_jsonl_full/rendered/512x288
 missing_image_policy: error
-train_split_name: clean_25k_train
-eval_split_name: clean_50k_val
+train_split_name: clean_10k_train
+eval_split_name: clean_10k_val
 input_mode: full
+input_mode_weights:
+  full: 0.50
+  image_only: 0.25
+  peak_table_only: 0.25
+eval_input_mode_weights:
+  full: 1.0
 prompt_template_index: 0
+target_stereochemistry: remove
+include_formula: true
+rule_context_enabled: false
+max_rule_evidence: 12
 task_weights:
   structure_prediction: 1.0
-include_formula: true
 h_snr: 500.0
 c_snr: 200.0
 render_seed: 3407
 image_size: [512, 288]
-max_eval_samples: 5000
+max_eval_samples: 1000
 
 dry_run: false
-output_dir: outputs/experiments/structure/scale-25k-formula-seed3407
+output_dir: outputs/experiments/structure/stage2-10k-seed3407
 per_device_train_batch_size: 16
-per_device_eval_batch_size: 16
+per_device_eval_batch_size: 8
 eval_accumulation_steps: 1
 gradient_accumulation_steps: 4
 dataloader_num_workers: 8
@@ -36,16 +45,16 @@ lora_r: 16
 lora_alpha: 32
 lora_dropout: 0.0
 num_train_epochs: 2
-learning_rate: 1.0e-4
+learning_rate: 5.0e-5
 weight_decay: 0.01
-warmup_steps: 100
+warmup_steps: 40
 lr_scheduler_type: cosine
 optim: adamw_8bit
 bf16: true
 fp16: false
 logging_steps: 10
-eval_steps: 100
-save_steps: 100
+eval_steps: 40
+save_steps: 40
 early_stopping_patience: 3
 early_stopping_threshold: 0.001
 save_total_limit: 3

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-CONFIG="${1:-configs/train_cuda_48g_smoke.yaml}"
+CONFIG="${1:-configs/train_smoke.yaml}"
 : "${CUDA_VISIBLE_DEVICES:=0}"
 export CUDA_VISIBLE_DEVICES
 

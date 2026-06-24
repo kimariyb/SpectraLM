@@ -8,6 +8,7 @@ from pathlib import Path
 from script.build_candidate_sidecar import build_candidate_sidecar
 from src.data.dataset import load_candidate_map
 from src.data.molecules import molecule_formula
+from src.data.molecules import canonicalize_connectivity_smiles
 
 
 def _write_candidate_dataset(tmp_path: Path) -> Path:
@@ -49,16 +50,30 @@ def test_candidate_sidecar_uses_formula_matched_hard_negatives(
     assert report["input_samples"] == 4
     assert report["candidate_sets"] == 3
     assert report["omitted_without_negatives"] == 1
+    assert report["candidate_coverage"] == 0.75
     for row in rows:
         assert row["target"] in row["candidates"]
+        assert row["target"] == canonicalize_connectivity_smiles(row["target"])
         assert len(row["candidates"]) == 3
         assert len(set(row["candidates"])) == 3
+        assert all(
+            candidate == canonicalize_connectivity_smiles(candidate)
+            for candidate in row["candidates"]
+        )
         assert {
             molecule_formula(candidate) for candidate in row["candidates"]
         } == {row["molecular_formula"]}
         assert row["negative_tanimoto"] == sorted(
             row["negative_tanimoto"], reverse=True
         )
+        assert len(row["negative_hardness"]) == 2
+        for hardness in row["negative_hardness"]:
+            assert set(hardness) == {
+                "smiles",
+                "same_ring_scaffold",
+                "functional_group_jaccard",
+                "tanimoto",
+            }
 
 
 def test_candidate_sidecar_is_deterministic_and_loadable(tmp_path: Path) -> None:

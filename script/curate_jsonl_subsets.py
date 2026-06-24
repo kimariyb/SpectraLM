@@ -4,9 +4,9 @@ This script does not copy ``samples.jsonl``.  It reads ``manifest.csv``,
 applies lightweight QC filters, creates scaffold-balanced ranked id lists, and
 writes named subset files such as:
 
-- ``subsets/clean_50k_train_ids.txt``
-- ``subsets/clean_50k_val_ids.txt``
-- ``subsets/clean_50k_test_ids.txt``
+- ``subsets/clean_10k_train_ids.txt``
+- ``subsets/clean_10k_val_ids.txt``
+- ``subsets/clean_10k_test_ids.txt``
 
 Training configs can point ``train_split_name`` and ``eval_split_name`` at
 these names while reusing the same paired JSONL mother dataset.
@@ -169,8 +169,7 @@ def scaffold_balanced_order(
 ) -> list[dict[str, Any]]:
     """Return rows in a deterministic scaffold-balanced order.
 
-    The ordering is intended for nested scaling subsets: the first 50k rows are
-    a scaffold-diverse prefix of the first 100k rows, etc.
+    The ordering provides a scaffold-diverse deterministic prefix.
     """
     rng = random.Random(seed)
     by_scaffold: dict[str, list[dict[str, Any]]] = defaultdict(list)

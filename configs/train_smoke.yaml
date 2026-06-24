@@ -1,5 +1,4 @@
-# Approved four-task NMR multitask training on one 48GB CUDA GPU.
-
+# Short Stage 1 protocol check for one 48GB CUDA GPU.
 model_path: /mnt/data/kimariyb/models/Qwen3.5-9B
 max_seq_length: 8192
 load_in_4bit: true
@@ -9,30 +8,38 @@ dataset_dir: dataset/paired_jsonl_full
 image_backend: pre_rendered
 rendered_image_dir: dataset/paired_jsonl_full/rendered/512x288
 missing_image_policy: error
-train_split_name: clean_50k_train
-eval_split_name: clean_50k_val
+train_split_name: clean_10k_train
+eval_split_name: clean_10k_val
 input_mode: full
+input_mode_weights:
+  full: 0.50
+  image_only: 0.25
+  peak_table_only: 0.25
+eval_input_mode_weights:
+  full: 1.0
 prompt_template_index: 0
+target_stereochemistry: remove
 include_formula: true
-rule_context_enabled: true
+rule_context_enabled: false
 max_rule_evidence: 12
 task_weights:
-  structure_prediction: 0.60
-  functional_group_recognition: 0.15
-  candidate_ranking: 0.15
+  structure_prediction: 0.40
+  functional_group_recognition: 0.20
+  candidate_ranking: 0.30
   spectral_region_classification: 0.10
-train_candidate_sidecar_path: dataset/paired_jsonl_full/candidate_sets_clean_50k_train.jsonl
-eval_candidate_sidecar_path: dataset/paired_jsonl_full/candidate_sets_clean_50k_val.jsonl
+train_candidate_sidecar_path: dataset/paired_jsonl_full/candidate_sets_clean_10k_train.jsonl
+eval_candidate_sidecar_path: dataset/paired_jsonl_full/candidate_sets_clean_10k_val.jsonl
 h_snr: 500.0
 c_snr: 200.0
 render_seed: 3407
 image_size: [512, 288]
-max_eval_samples: 5000
+max_train_samples: 2048
+max_eval_samples: 256
 
 dry_run: false
-output_dir: outputs/experiments/multitask/multitask-50k-seed3407
+output_dir: outputs/experiments/multitask/smoke-10k-seed3407
 per_device_train_batch_size: 16
-per_device_eval_batch_size: 16
+per_device_eval_batch_size: 8
 eval_accumulation_steps: 1
 gradient_accumulation_steps: 4
 dataloader_num_workers: 8
@@ -42,18 +49,19 @@ dataloader_pin_memory: true
 lora_r: 16
 lora_alpha: 32
 lora_dropout: 0.0
-num_train_epochs: 2
+num_train_epochs: 1
+max_steps: 20
 learning_rate: 1.0e-4
 weight_decay: 0.01
-warmup_steps: 200
+warmup_steps: 2
 lr_scheduler_type: cosine
 optim: adamw_8bit
 bf16: true
 fp16: false
-logging_steps: 10
-eval_steps: 200
-save_steps: 200
+logging_steps: 1
+eval_steps: 10
+save_steps: 10
 early_stopping_patience: 3
 early_stopping_threshold: 0.001
-save_total_limit: 3
+save_total_limit: 2
 seed: 3407

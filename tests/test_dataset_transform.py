@@ -9,6 +9,10 @@ from PIL import Image as PILImage
 import pytest
 
 import src.data.dataset as dataset_module
+from src.data.modalities import (
+    normalize_input_mode_weights,
+    select_weighted_input_mode,
+)
 from src.data.dataset import (
     LazyNMRJsonlDataset,
     NMRMessageTransform,
@@ -53,6 +57,36 @@ def test_resize_image_skips_resize_when_dimensions_match(monkeypatch) -> None:
 
     assert result.size == (32, 18)
     assert resize_calls == []
+
+
+def test_modality_weights_normalize_to_approved_three_modes() -> None:
+    """The current curriculum should expose only three evidence mixtures."""
+    assert normalize_input_mode_weights(
+        {"full": 0.5, "image_only": 0.25, "peak_table_only": 0.25}
+    ) == {"full": 0.5, "image_only": 0.25, "peak_table_only": 0.25}
+
+
+def test_modality_selection_is_stable_per_sample() -> None:
+    """Worker scheduling must not alter one sample's assigned modality."""
+    weights = {"full": 0.5, "image_only": 0.25, "peak_table_only": 0.25}
+    first = select_weighted_input_mode(
+        "sample-17",
+        seed=3407,
+        weights=weights,
+    )
+    second = select_weighted_input_mode(
+        "sample-17",
+        seed=3407,
+        weights=weights,
+    )
+    assert first == second
+    assert first in weights
+
+
+def test_formula_only_is_rejected_from_training_mixture() -> None:
+    """Formula-only remains an ablation, not a curriculum mode."""
+    with pytest.raises(ValueError, match="formula_only"):
+        normalize_input_mode_weights({"full": 0.5, "formula_only": 0.5})
 
 
 def test_lazy_dataset_reuses_cached_offsets(
@@ -191,13 +225,32 @@ def test_message_transform_emits_only_selected_modalities(
     )
 
 
-def test_non_full_modality_rejects_auxiliary_task_mixture() -> None:
-    """Auxiliary prompts are currently defined only for the full input."""
-    with pytest.raises(ValueError, match="structure_prediction"):
-        NMRMessageTransform(
-            input_mode="image_only",
-            task_weights={"functional_group_recognition": 1.0},
-        )
+def test_message_transform_uses_weighted_peak_only_mode(ethanol_sample) -> None:
+    """A weighted curriculum row should physically omit image inputs."""
+    transform = NMRMessageTransform(
+        seed=1,
+        input_mode_weights={"peak_table_only": 1.0},
+        prompt_template_index=0,
+    )
+    output = transform(
+        {
+            "h_image": [PILImage.new("RGB", (32, 18))],
+            "c_image": [PILImage.new("RGB", (32, 18))],
+            "sample": [ethanol_sample],
+        }
+    )
+    content = output["messages"][0][0]["content"]
+    assert [item["type"] for item in content] == ["text"]
+    assert "## 1H NMR Peak Table" in content[0]["text"]
+
+
+def test_non_full_modality_supports_auxiliary_task_mixture() -> None:
+    """Mode-aware prompts should permit auxiliary image-only supervision."""
+    transform = NMRMessageTransform(
+        input_mode="image_only",
+        task_weights={"functional_group_recognition": 1.0},
+    )
+    assert transform.task_names == ("functional_group_recognition",)
 
 
 def test_message_transform_can_add_formula_free_rule_context(ethanol_sample) -> None:

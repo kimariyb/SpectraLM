@@ -13,11 +13,16 @@ from typing import Any
 
 from rdkit import Chem, DataStructs
 from rdkit.Chem import rdFingerprintGenerator
+from rdkit.Chem.Scaffolds import MurckoScaffold
 
 # Allow running from project root without PYTHONPATH.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.data.molecules import canonicalize_smiles, molecule_formula
+from src.data.functional_groups import functional_groups
+from src.data.molecules import (
+    canonicalize_connectivity_smiles,
+    molecule_formula,
+)
 
 
 _MORGAN_GENERATOR = rdFingerprintGenerator.GetMorganGenerator(radius=2, fpSize=1024)
@@ -28,6 +33,17 @@ def _fingerprint(smiles: str):
     if mol is None:
         raise ValueError(f"Invalid canonical SMILES in candidate pool: {smiles}")
     return _MORGAN_GENERATOR.GetFingerprint(mol)
+
+
+def _ring_scaffold(smiles: str) -> str:
+    """Return a non-isomeric ring scaffold or an empty string."""
+    mol = Chem.MolFromSmiles(smiles)
+    if mol is None:
+        return ""
+    return MurckoScaffold.MurckoScaffoldSmiles(
+        mol=mol,
+        includeChirality=False,
+    )
 
 
 def _stable_pool(
@@ -55,7 +71,7 @@ def build_candidate_sidecar(
     candidates_per_sample: int = 8,
     max_pool_size: int = 512,
     seed: int = 3407,
-) -> dict[str, int]:
+) -> dict[str, int | float]:
     """Build same-formula candidate sets ordered by hard-negative similarity.
 
     Parameters
@@ -63,7 +79,7 @@ def build_candidate_sidecar(
     dataset_dir
         Dataset containing ``samples.jsonl`` and split ID files.
     split
-        Split name such as ``clean_50k_train``.
+        Split name such as ``clean_10k_train``.
     output_path
         Destination JSONL sidecar.
     candidates_per_sample
@@ -105,7 +121,7 @@ def build_candidate_sidecar(
             sample_id = str(row.get("id", ""))
             if sample_id not in selected_ids:
                 continue
-            canonical = canonicalize_smiles(
+            canonical = canonicalize_connectivity_smiles(
                 row.get("canonical_smiles") or row.get("smiles")
             )
             if canonical is None:
@@ -117,6 +133,8 @@ def build_candidate_sidecar(
     for row in samples:
         by_formula[row["formula"]].append(row)
     fingerprints = {row["smiles"]: _fingerprint(row["smiles"]) for row in samples}
+    scaffolds = {row["smiles"]: _ring_scaffold(row["smiles"]) for row in samples}
+    group_sets = {row["smiles"]: functional_groups(row["smiles"]) for row in samples}
 
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -138,19 +156,44 @@ def build_candidate_sidecar(
                 omitted += 1
                 continue
             target_fp = fingerprints[target["smiles"]]
-            scored = sorted(
-                (
-                    DataStructs.TanimotoSimilarity(
-                        target_fp,
-                        fingerprints[row["smiles"]],
-                    ),
-                    row["smiles"],
+            target_scaffold = scaffolds[target["smiles"]]
+            target_groups = group_sets[target["smiles"]]
+            scored: list[dict[str, Any]] = []
+            for row in negatives:
+                candidate_smiles = row["smiles"]
+                candidate_scaffold = scaffolds[candidate_smiles]
+                candidate_groups = group_sets[candidate_smiles]
+                union = target_groups | candidate_groups
+                scored.append(
+                    {
+                        "smiles": candidate_smiles,
+                        "same_ring_scaffold": bool(
+                            target_scaffold
+                            and candidate_scaffold
+                            and target_scaffold == candidate_scaffold
+                        ),
+                        "functional_group_jaccard": (
+                            len(target_groups & candidate_groups) / len(union)
+                            if union
+                            else 1.0
+                        ),
+                        "tanimoto": DataStructs.TanimotoSimilarity(
+                            target_fp,
+                            fingerprints[candidate_smiles],
+                        ),
+                    }
                 )
-                for row in negatives
+            scored.sort(
+                key=lambda item: (
+                    item["same_ring_scaffold"],
+                    item["functional_group_jaccard"],
+                    item["tanimoto"],
+                    item["smiles"],
+                ),
+                reverse=True,
             )
-            scored.reverse()
             selected = scored[: candidates_per_sample - 1]
-            displayed = [target["smiles"], *[smiles for _, smiles in selected]]
+            displayed = [target["smiles"], *[item["smiles"] for item in selected]]
             shuffle_seed = int.from_bytes(
                 hashlib.sha256(f"{seed}:{target['id']}".encode("utf-8")).digest()[:8],
                 byteorder="big",
@@ -161,7 +204,21 @@ def build_candidate_sidecar(
                 "molecular_formula": target["formula"],
                 "target": target["smiles"],
                 "candidates": displayed,
-                "negative_tanimoto": [round(score, 6) for score, _ in selected],
+                "negative_tanimoto": sorted(
+                    [round(float(item["tanimoto"]), 6) for item in selected],
+                    reverse=True,
+                ),
+                "negative_hardness": [
+                    {
+                        "smiles": item["smiles"],
+                        "same_ring_scaffold": item["same_ring_scaffold"],
+                        "functional_group_jaccard": round(
+                            float(item["functional_group_jaccard"]), 6
+                        ),
+                        "tanimoto": round(float(item["tanimoto"]), 6),
+                    }
+                    for item in selected
+                ],
             }
             handle.write(json.dumps(record, ensure_ascii=False) + "\n")
             candidate_sets += 1
@@ -170,6 +227,9 @@ def build_candidate_sidecar(
         "input_samples": len(samples),
         "candidate_sets": candidate_sets,
         "omitted_without_negatives": omitted,
+        "candidate_coverage": (
+            candidate_sets / len(samples) if samples else 0.0
+        ),
     }
 
 
@@ -177,7 +237,7 @@ def main() -> None:
     """Build a candidate-ranking sidecar from the command line."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("dataset_dir")
-    parser.add_argument("--split", default="clean_50k_train")
+    parser.add_argument("--split", default="clean_10k_train")
     parser.add_argument("--output", required=True)
     parser.add_argument("--candidates-per-sample", type=int, default=8)
     parser.add_argument("--max-pool-size", type=int, default=512)

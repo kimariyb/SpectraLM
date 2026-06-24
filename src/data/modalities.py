@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any, Iterable, Sequence
+import hashlib
+from typing import Any, Iterable, Mapping, Sequence
 
 
 FULL = "full"
@@ -16,6 +17,7 @@ INPUT_MODES = (
     PEAK_TABLE_ONLY,
     FORMULA_ONLY,
 )
+TRAINING_INPUT_MODES = (FULL, IMAGE_ONLY, PEAK_TABLE_ONLY)
 
 
 def normalize_input_mode(input_mode: str | None) -> str:
@@ -27,6 +29,49 @@ def normalize_input_mode(input_mode: str | None) -> str:
             f"got {input_mode!r}"
         )
     return normalized
+
+
+def normalize_input_mode_weights(
+    weights: Mapping[str, float] | None,
+) -> dict[str, float]:
+    """Validate and normalize the three-mode training curriculum."""
+    raw = dict(weights or {FULL: 1.0})
+    unknown = sorted(set(raw) - set(TRAINING_INPUT_MODES))
+    if unknown:
+        raise ValueError(
+            "Unsupported training input mode: " + ", ".join(unknown)
+        )
+    if any(float(value) < 0 for value in raw.values()):
+        raise ValueError("input_mode_weights must be non-negative")
+    positive = {
+        normalize_input_mode(mode): float(value)
+        for mode, value in raw.items()
+        if float(value) > 0
+    }
+    if not positive:
+        raise ValueError("input_mode_weights must contain a positive weight")
+    total = sum(positive.values())
+    return {mode: value / total for mode, value in positive.items()}
+
+
+def select_weighted_input_mode(
+    sample_id: str,
+    *,
+    seed: int,
+    weights: Mapping[str, float],
+) -> str:
+    """Select one reproducible input mode from normalized sample weights."""
+    normalized = normalize_input_mode_weights(weights)
+    payload = f"{seed}:{sample_id}:input_mode".encode("utf-8")
+    point = int.from_bytes(hashlib.sha256(payload).digest()[:8], "big") / float(
+        2**64
+    )
+    cumulative = 0.0
+    for mode, probability in normalized.items():
+        cumulative += probability
+        if point < cumulative:
+            return mode
+    return next(reversed(normalized))
 
 
 def input_mode_uses_images(input_mode: str | None) -> bool:
@@ -55,11 +100,7 @@ def validate_input_configuration(
             "rule context is only supported for full input_mode because it "
             "derives additional evidence from the peak data"
         )
-    tasks = set(task_names)
-    if mode != FULL and tasks != {"structure_prediction"}:
-        raise ValueError(
-            "Non-full input modes support only the structure_prediction task"
-        )
+    tuple(task_names)
     return mode
 
 

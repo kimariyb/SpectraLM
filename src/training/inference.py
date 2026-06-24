@@ -9,7 +9,7 @@ only the molecular-formula line changes.
 
 Usage::
 
-    python -m src.training.inference configs/experiments/infer_zero_shot_50k.yaml
+    python -m src.training.inference configs/experiments/infer_stage2_10k.yaml
 """
 
 from __future__ import annotations
@@ -212,6 +212,94 @@ def generate_one(
     )[0]
 
     return pred.strip(), generation_trace
+
+
+@torch.inference_mode()
+def generate_many(
+    model,
+    tokenizer,
+    images: list[Any],
+    prompt: str,
+    *,
+    num_return_sequences: int,
+    max_new_tokens: int = 128,
+    temperature: float = 0.7,
+    top_p: float = 0.9,
+    input_mode: str = "full",
+) -> tuple[list[str], list[dict[str, int | bool]]]:
+    """Sample multiple structure candidates from one identical model input."""
+    if num_return_sequences < 1:
+        raise ValueError("num_return_sequences must be positive")
+    if num_return_sequences > 1 and temperature <= 0:
+        raise ValueError("Multiple candidates require temperature > 0")
+    uses_images = input_mode_uses_images(input_mode)
+    content = build_user_content(
+        prompt,
+        input_mode=input_mode,
+        images=(None, None) if uses_images else (),
+    )
+    messages = [{"role": "user", "content": content}]
+    input_text = apply_non_thinking_chat_template(tokenizer, messages)
+    processor_kwargs: dict[str, Any] = {
+        "text": input_text,
+        "add_special_tokens": False,
+        "return_tensors": "pt",
+    }
+    if uses_images:
+        if len(images) != 2:
+            raise ValueError(f"Expected 2 images, but got {len(images)}.")
+        processor_kwargs["images"] = images
+    elif images:
+        raise ValueError(f"{input_mode} input_mode must not receive images")
+    inputs = tokenizer(**processor_kwargs).to("cuda")
+
+    raw_eos_token_ids = getattr(model.generation_config, "eos_token_id", None)
+    if raw_eos_token_ids is None:
+        raw_eos_token_ids = tokenizer.eos_token_id
+    if raw_eos_token_ids is None:
+        raise ValueError("Tokenizer and model generation config have no EOS token.")
+    pad_token_id = tokenizer.pad_token_id
+    if pad_token_id is None:
+        pad_token_id = (
+            raw_eos_token_ids
+            if isinstance(raw_eos_token_ids, int)
+            else raw_eos_token_ids[0]
+        )
+    output_ids = model.generate(
+        **inputs,
+        max_new_tokens=max_new_tokens,
+        do_sample=temperature > 0,
+        temperature=temperature,
+        top_p=top_p,
+        num_return_sequences=num_return_sequences,
+        use_cache=True,
+        eos_token_id=raw_eos_token_ids,
+        pad_token_id=pad_token_id,
+    )
+    input_len = inputs["input_ids"].shape[1]
+    generated_ids = output_ids[:, input_len:]
+    predictions = [
+        prediction.strip()
+        for prediction in tokenizer.batch_decode(
+            generated_ids,
+            skip_special_tokens=True,
+            clean_up_tokenization_spaces=False,
+        )
+    ]
+    eos_token_ids = (
+        {raw_eos_token_ids}
+        if isinstance(raw_eos_token_ids, int)
+        else {int(token_id) for token_id in raw_eos_token_ids}
+    )
+    traces = [
+        inspect_generation_tokens(
+            token_ids.detach().cpu().tolist(),
+            eos_token_ids=eos_token_ids,
+            max_new_tokens=max_new_tokens,
+        )
+        for token_ids in generated_ids
+    ]
+    return predictions, traces
 
 
 def main(config: dict[str, Any]) -> None:

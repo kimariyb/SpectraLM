@@ -15,8 +15,10 @@ from src.data.tasks import (
     FUNCTIONAL_GROUP_RECOGNITION,
     SPECTRAL_REGION_CLASSIFICATION,
     STRUCTURE_PREDICTION,
+    build_candidate_ranking_prompt,
     build_task_example,
     normalize_task_weights,
+    select_weighted_task,
 )
 
 
@@ -92,6 +94,21 @@ def test_task_weights_are_normalized_and_validated() -> None:
         normalize_task_weights({"unknown": 1})
 
 
+def test_weighted_task_selection_is_stable_per_sample() -> None:
+    weights = {
+        STRUCTURE_PREDICTION: 0.4,
+        FUNCTIONAL_GROUP_RECOGNITION: 0.2,
+        CANDIDATE_RANKING: 0.3,
+        SPECTRAL_REGION_CLASSIFICATION: 0.1,
+    }
+    first = select_weighted_task("sample-42", seed=3407, weights=weights)
+
+    assert first == select_weighted_task(
+        "sample-42", seed=3407, weights=weights
+    )
+    assert first in weights
+
+
 def test_structure_prediction_task_preserves_smiles_target(ethanol_sample) -> None:
     """The main task should remain direct canonical-SMILES prediction."""
     example = build_task_example(ethanol_sample, STRUCTURE_PREDICTION)
@@ -132,6 +149,23 @@ def test_candidate_ranking_task_selects_target_from_candidates(ethanol_sample) -
     assert "best candidate" in example.prompt.lower()
 
 
+def test_candidate_ranking_prompt_describes_image_only_evidence(
+    ethanol_sample,
+) -> None:
+    """Auxiliary tasks must not claim that ablated peak tables are present."""
+    example = build_task_example(
+        ethanol_sample,
+        CANDIDATE_RANKING,
+        candidates=["CCO", "COC"],
+        input_mode="image_only",
+    )
+
+    assert "No numerical peak tables are available" in example.prompt
+    assert "## 1H NMR Peak Table" not in example.prompt
+    assert "1. CCO" in example.prompt
+    assert "2. COC" in example.prompt
+
+
 def test_candidate_ranking_requires_target_in_candidate_set(ethanol_sample) -> None:
     """A malformed sidecar must not silently create an incorrect target."""
     with pytest.raises(ValueError, match="target structure"):
@@ -140,3 +174,23 @@ def test_candidate_ranking_requires_target_in_candidate_set(ethanol_sample) -> N
             CANDIDATE_RANKING,
             candidates=["COC", "CCN"],
         )
+
+
+def test_candidate_ranking_inference_prompt_does_not_require_target() -> None:
+    """Inference ranking must not read or require the reference structure."""
+    sample = {
+        "molecular_formula": "C2H6O",
+        "h_nmr_peaks": [{"shift": 1.2}],
+        "c_nmr_peaks": [{"shift": 18.0}],
+    }
+
+    prompt = build_candidate_ranking_prompt(
+        sample,
+        ["OCC", "COC"],
+        include_formula=True,
+        input_mode="full",
+    )
+
+    assert "1. CCO" in prompt
+    assert "2. COC" in prompt
+    assert "C2H6O" in prompt
