@@ -106,7 +106,7 @@ def test_inference_configs_use_stage2_and_shared_test() -> None:
         config = _read_yaml(name)
         assert config["adapter_path"] == f"{stage2['output_dir']}/best_model"
         assert config["split"] == "clean_10k_test"
-        assert config["max_samples"] == 5000
+        assert config["max_samples"] == 1000
         assert config["input_mode"] == "full"
         assert config["include_formula"] is True
 

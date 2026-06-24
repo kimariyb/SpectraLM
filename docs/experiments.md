@@ -2,7 +2,7 @@
 
 This is the only active experiment protocol. The 10k development cohort contains
 9,000 training samples and 1,000 validation samples. A separate scaffold-disjoint
-test split contains up to 5,000 samples and is not counted in the 10k cohort.
+test split contains 1,000 samples (10%) and is not counted in the 10k cohort.
 
 ## Fixed Protocol
 
@@ -54,7 +54,7 @@ python script/pre_render_jsonl_images.py dataset/paired_jsonl_full \
   --num-workers 32
 ```
 
-Before training, verify that the split files contain 9,000, 1,000, and 5,000
+Before training, verify that the split files contain 9,000, 1,000, and 1,000
 IDs and inspect `candidate_coverage` printed by each sidecar command. Samples
 without a same-formula negative fall back to direct structure supervision for
 that draw rather than aborting training.

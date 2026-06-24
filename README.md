@@ -9,7 +9,7 @@ and an optional molecular formula.
 The repository has one supported research workflow:
 
 1. Curate a 10k development cohort: 9,000 train and 1,000 validation samples.
-2. Keep a separate scaffold-disjoint test set of up to 5,000 samples.
+2. Keep a separate scaffold-disjoint test set of 1,000 samples (10%).
 3. Build formula-matched hard negatives for candidate-ranking supervision.
 4. Train one adapter sequentially: multitask Stage 1, then structure-only Stage 2.
 5. Evaluate both greedy prediction and 32-candidate formula-constrained inference.

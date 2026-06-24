@@ -18,7 +18,7 @@ render_seed: 3407
 include_formula: true
 rule_context_enabled: false
 rule_validation_enabled: false
-max_samples: 5000
+max_samples: 1000
 max_new_tokens: 128
 temperature: 0.0
 top_p: 1.0

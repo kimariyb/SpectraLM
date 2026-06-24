@@ -119,7 +119,7 @@ def test_build_subsets_writes_nested_scaling_id_files(tmp_path: Path) -> None:
         tmp_path,
         subset_sizes=[2, 4],
         val_size=2,
-        test_size=2,
+        test_fraction=0.5,
         prefix="clean",
         seed=1,
     )
@@ -135,10 +135,10 @@ def test_build_subsets_writes_nested_scaling_id_files(tmp_path: Path) -> None:
     assert summary["subsets"]["clean_2"]["train"]["samples"] == 2
 
 
-def test_total_size_and_val_fraction_build_exact_9k_1k_protocol(
+def test_total_size_builds_exact_9k_1k_1k_protocol(
     tmp_path: Path,
 ) -> None:
-    """A 10k cohort should contain 9k train and 1k validation samples."""
+    """A 10k cohort should use 10% validation and 10% test samples."""
     rows = [
         _manifest_row(f"train-{idx}", "train", f"train-{idx}")
         for idx in range(9000)
@@ -149,7 +149,7 @@ def test_total_size_and_val_fraction_build_exact_9k_1k_protocol(
     )
     rows.extend(
         _manifest_row(f"test-{idx}", "test", f"test-{idx}")
-        for idx in range(5000)
+        for idx in range(1000)
     )
 
     summary = build_subsets(
@@ -157,14 +157,15 @@ def test_total_size_and_val_fraction_build_exact_9k_1k_protocol(
         tmp_path,
         subset_sizes=[10_000],
         val_fraction=0.1,
-        test_size=5_000,
+        test_fraction=0.1,
         seed=3407,
     )
 
     cohort = summary["subsets"]["clean_10k"]
     assert cohort["train"]["samples"] == 9000
     assert cohort["val"]["samples"] == 1000
-    assert cohort["test"]["samples"] == 5000
+    assert cohort["test"]["samples"] == 1000
     assert cohort["requested_total_size"] == 10000
     assert cohort["requested_train_size"] == 9000
     assert cohort["requested_val_size"] == 1000
+    assert cohort["requested_test_size"] == 1000

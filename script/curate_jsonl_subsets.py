@@ -234,7 +234,7 @@ def build_subsets(
     subset_sizes: list[int],
     val_size: int = 5000,
     val_fraction: float | None = None,
-    test_size: int = 5000,
+    test_fraction: float = 0.1,
     prefix: str = "clean",
     seed: int = 3407,
     min_heavy_atoms: int = 2,
@@ -248,6 +248,8 @@ def build_subsets(
     """Build named subset id files from manifest rows."""
     if val_fraction is not None and not 0.0 < float(val_fraction) < 1.0:
         raise ValueError("val_fraction must be between 0 and 1")
+    if not 0.0 < float(test_fraction) < 1.0:
+        raise ValueError("test_fraction must be between 0 and 1")
     out_path = Path(out_dir)
     out_path.mkdir(parents=True, exist_ok=True)
 
@@ -288,8 +290,6 @@ def build_subsets(
         "subsets": {},
     }
 
-    shared_test = ranked["test"][: min(test_size, len(ranked["test"]))]
-
     for requested_size in sorted(set(int(size) for size in subset_sizes)):
         if val_fraction is None:
             requested_train_size = requested_size
@@ -299,6 +299,9 @@ def build_subsets(
                 round(requested_size * float(val_fraction))
             )
             requested_train_size = requested_size - requested_val_size
+        requested_test_size = int(
+            round(requested_size * float(test_fraction))
+        )
         selected_train = ranked["train"][: min(
             requested_train_size,
             len(ranked["train"]),
@@ -307,12 +310,16 @@ def build_subsets(
             requested_val_size,
             len(ranked["val"]),
         )]
+        selected_test = ranked["test"][: min(
+            requested_test_size,
+            len(ranked["test"]),
+        )]
         name = f"{prefix}_{requested_size // 1000}k" if requested_size >= 1000 else f"{prefix}_{requested_size}"
 
         selected = {
             "train": selected_train,
             "val": selected_val,
-            "test": shared_test,
+            "test": selected_test,
         }
         for split, rows in selected.items():
             _write_ids(out_path / f"{name}_{split}_ids.txt", rows)
@@ -322,6 +329,7 @@ def build_subsets(
             "requested_total_size": requested_size,
             "requested_train_size": requested_train_size,
             "requested_val_size": requested_val_size,
+            "requested_test_size": requested_test_size,
             **{
             split: summarize_rows(rows)
             for split, rows in selected.items()
@@ -351,7 +359,7 @@ def main() -> None:
     )
     parser.add_argument("--val-size", type=int, default=5000)
     parser.add_argument("--val-fraction", type=float, default=None)
-    parser.add_argument("--test-size", type=int, default=5000)
+    parser.add_argument("--test-fraction", type=float, default=0.1)
     parser.add_argument("--prefix", default="clean")
     parser.add_argument("--seed", type=int, default=3407)
     parser.add_argument("--min-heavy-atoms", type=int, default=2)
@@ -376,7 +384,7 @@ def main() -> None:
         subset_sizes=args.subset_sizes,
         val_size=args.val_size,
         val_fraction=args.val_fraction,
-        test_size=args.test_size,
+        test_fraction=args.test_fraction,
         prefix=args.prefix,
         seed=args.seed,
         min_heavy_atoms=args.min_heavy_atoms,

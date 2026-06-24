@@ -33,7 +33,7 @@ case "${stage}:${run_name}" in
     exec python script/curate_jsonl_subsets.py "${dataset_dir}" \
       --subset-sizes 10000 \
       --val-fraction 0.1 \
-      --test-size 5000 \
+      --test-fraction 0.1 \
       --prefix clean \
       --seed 3407 \
       --max-heavy-atoms 60 \
