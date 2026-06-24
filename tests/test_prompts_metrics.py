@@ -206,6 +206,20 @@ def test_structure_evaluation_reports_formula_and_connectivity_matches() -> None
     assert "formula_match" not in row
 
 
+def test_structure_summary_stratifies_stereochemistry() -> None:
+    """Achiral and stereo-bearing references need separate recovery rates."""
+    summarize = metrics_module.summarize_structure_predictions
+    achiral = evaluate_structure_prediction("CCO", "CCO")
+    stereo = evaluate_structure_prediction("FC(Cl)Br", "F[C@H](Cl)Br")
+
+    summary = summarize([achiral, stereo])
+
+    assert summary["achiral_reference_coverage"] == 0.5
+    assert summary["achiral_exact_match"] == 1.0
+    assert summary["stereo_present_reference_coverage"] == 0.5
+    assert summary["stereo_present_connectivity_exact_match"] == 1.0
+
+
 def test_tanimoto_similarity_scores_exact_match() -> None:
     """Identical valid SMILES should score perfect Tanimoto similarity."""
     assert tanimoto_similarity("CCO", "CCO") == 1.0

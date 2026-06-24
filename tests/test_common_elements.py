@@ -6,10 +6,27 @@ from src.data.manifest import sample_manifest_row
 from src.data import molecules as molecule_utils
 from src.data.molecules import (
     ALLOWED_ELEMENT_SYMBOLS,
+    canonicalize_connectivity_smiles,
+    has_explicit_stereochemistry,
     has_only_allowed_elements,
     molecule_elements,
     unsupported_elements,
 )
+
+
+def test_connectivity_canonicalization_removes_tetrahedral_stereo() -> None:
+    """Opposite stereoisomers should share one connectivity target."""
+    first = canonicalize_connectivity_smiles("F[C@H](Cl)Br")
+    second = canonicalize_connectivity_smiles("F[C@@H](Cl)Br")
+
+    assert first == second
+    assert first is not None and "@" not in first
+
+
+def test_explicit_stereochemistry_detection_distinguishes_targets() -> None:
+    """Stereo-bearing references should be identifiable for stratification."""
+    assert has_explicit_stereochemistry("F[C@H](Cl)Br") is True
+    assert has_explicit_stereochemistry("FC(Cl)Br") is False
 
 
 def _inspect_dataset_molecule(smiles: str):

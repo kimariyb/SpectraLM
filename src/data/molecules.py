@@ -125,6 +125,28 @@ def canonicalize_smiles(smiles: str | None) -> str | None:
         return None
 
 
+@lru_cache(maxsize=8192)
+def canonicalize_connectivity_smiles(smiles: str | None) -> str | None:
+    """Canonicalize molecular connectivity without stereochemistry."""
+    canonical = canonicalize_smiles(smiles)
+    mol = Chem.MolFromSmiles(canonical) if canonical is not None else None
+    if mol is None:
+        return None
+    return Chem.MolToSmiles(mol, canonical=True, isomericSmiles=False)
+
+
+@lru_cache(maxsize=8192)
+def has_explicit_stereochemistry(smiles: str | None) -> bool:
+    """Return whether canonical SMILES contains explicit stereo information."""
+    canonical = canonicalize_smiles(smiles)
+    connectivity = canonicalize_connectivity_smiles(smiles)
+    return (
+        canonical is not None
+        and connectivity is not None
+        and canonical != connectivity
+    )
+
+
 def mol_from_smiles(smiles: str | None) -> Chem.Mol | None:
     """Create an RDKit molecule from SMILES."""
     if not smiles:

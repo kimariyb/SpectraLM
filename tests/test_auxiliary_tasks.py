@@ -30,6 +30,20 @@ def test_functional_group_ontology_recognizes_common_oxygen_groups() -> None:
     assert functional_groups("CC(=O)N") >= {"amide"}
 
 
+def test_structure_task_can_supervise_connectivity_only(ethanol_sample) -> None:
+    """New two-stage runs should remove unobservable stereochemistry."""
+    sample = dict(ethanol_sample)
+    sample["canonical_smiles"] = "F[C@H](Cl)Br"
+
+    example = build_task_example(
+        sample,
+        STRUCTURE_PREDICTION,
+        target_stereochemistry="remove",
+    )
+
+    assert "@" not in example.target
+
+
 def test_functional_group_ontology_covers_requested_hetero_elements() -> None:
     """The ontology should cover N, halogen, S, P, and Si functionality."""
     assert functional_groups("CCN") >= {"amine"}

@@ -7,7 +7,11 @@ import json
 from typing import Any, Mapping, Sequence
 
 from src.data.functional_groups import FUNCTIONAL_GROUP_SMARTS, functional_groups
-from src.data.molecules import canonicalize_smiles, sample_smiles
+from src.data.molecules import (
+    canonicalize_connectivity_smiles,
+    canonicalize_smiles,
+    sample_smiles,
+)
 from src.data.spectral_regions import classify_spectral_regions
 from src.data.modalities import FULL, validate_input_configuration
 from src.evaluation.prompts import (
@@ -100,6 +104,7 @@ def build_task_example(
     include_rule_context: bool = False,
     max_rule_evidence: int = 12,
     input_mode: str = FULL,
+    target_stereochemistry: str = "preserve",
 ) -> TaskExample:
     """Build one prompt and target for a supported NMR supervision task.
 
@@ -133,7 +138,18 @@ def build_task_example(
         include_rule_context=include_rule_context,
         task_names=(task,),
     )
-    target = canonicalize_smiles(sample_smiles(sample))
+    if target_stereochemistry not in {"preserve", "remove"}:
+        raise ValueError(
+            "target_stereochemistry must be 'preserve' or 'remove'"
+        )
+    raw_target = canonicalize_smiles(sample_smiles(sample))
+    if raw_target is None:
+        raise ValueError("Task sample requires a valid target structure.")
+    target = (
+        canonicalize_connectivity_smiles(raw_target)
+        if target_stereochemistry == "remove"
+        else raw_target
+    )
     if target is None:
         raise ValueError("Task sample requires a valid target structure.")
 

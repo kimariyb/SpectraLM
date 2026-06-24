@@ -11,7 +11,11 @@ from rdkit.Chem import rdMolDescriptors
 from rdkit.Chem.Scaffolds import MurckoScaffold
 
 from src.data.functional_groups import FUNCTIONAL_GROUP_SMARTS, functional_groups
-from src.data.molecules import canonicalize_smiles, inspect_dataset_molecule
+from src.data.molecules import (
+    canonicalize_smiles,
+    has_explicit_stereochemistry,
+    inspect_dataset_molecule,
+)
 from src.evaluation.generation_metrics import (
     inspect_generation_tokens,
     summarize_generation_behavior,
@@ -252,6 +256,9 @@ def evaluate_structure_prediction(
     result = {
         "predicted_smiles": predicted,
         "reference_smiles": reference,
+        "reference_stereochemistry_present": has_explicit_stereochemistry(
+            reference
+        ),
         "valid_smiles": predicted is not None,
         **_domain_validity(predicted),
         "exact_match": (
@@ -397,6 +404,26 @@ def summarize_structure_predictions(
             sum(bool(row["non_bare_output"]) for row in rows) / total
         ),
     }
+    achiral_rows = [
+        row for row in rows if not row["reference_stereochemistry_present"]
+    ]
+    stereo_rows = [
+        row for row in rows if row["reference_stereochemistry_present"]
+    ]
+    summary["achiral_reference_coverage"] = len(achiral_rows) / total
+    summary["achiral_exact_match"] = (
+        sum(bool(row["exact_match"]) for row in achiral_rows)
+        / len(achiral_rows)
+        if achiral_rows
+        else None
+    )
+    summary["stereo_present_reference_coverage"] = len(stereo_rows) / total
+    summary["stereo_present_connectivity_exact_match"] = (
+        sum(bool(row["connectivity_exact_match"]) for row in stereo_rows)
+        / len(stereo_rows)
+        if stereo_rows
+        else None
+    )
     predicted_groups = [set(row["predicted_functional_groups"]) for row in rows]
     reference_groups = [set(row["reference_functional_groups"]) for row in rows]
     group_summary = summarize_multilabel_predictions(
