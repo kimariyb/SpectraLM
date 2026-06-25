@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import json
 from typing import Any
 
 import numpy as np
@@ -30,6 +31,33 @@ from src.nmr_rules.validator import validate_candidate
 def classify_output_behavior(text: str) -> dict[str, bool]:
     """Classify a response into one disjoint output-behavior state."""
     stripped = str(text or "").strip()
+    parsed = _parse_json_payload(stripped)
+    if parsed is not None:
+        if not _payload_has_smiles_key(parsed):
+            return {
+                "output_format_compliant": False,
+                "rdkit_invalid_bare_output": False,
+                "non_bare_output": True,
+            }
+        smiles = _extract_smiles_from_payload(parsed)
+        if smiles is None:
+            return {
+                "output_format_compliant": True,
+                "rdkit_invalid_bare_output": False,
+                "non_bare_output": False,
+            }
+        if canonicalize_smiles(smiles) is None:
+            return {
+                "output_format_compliant": False,
+                "rdkit_invalid_bare_output": True,
+                "non_bare_output": False,
+            }
+        return {
+            "output_format_compliant": True,
+            "rdkit_invalid_bare_output": False,
+            "non_bare_output": False,
+        }
+
     nonempty_lines = [
         line.strip() for line in stripped.splitlines() if line.strip()
     ]
@@ -54,14 +82,18 @@ def classify_output_behavior(text: str) -> dict[str, bool]:
             "non_bare_output": False,
         }
     return {
-        "output_format_compliant": True,
+        "output_format_compliant": False,
         "rdkit_invalid_bare_output": False,
-        "non_bare_output": False,
+        "non_bare_output": True,
     }
 
 
 def extract_final_smiles(text: str) -> str | None:
     """Extract a SMILES candidate from a model response."""
+    parsed = _parse_json_payload(str(text or ""))
+    if parsed is not None:
+        return _extract_smiles_from_payload(parsed)
+
     patterns = [
         r"Final canonical SMILES\s*:\s*([^\s`]+)",
         r"Final SMILES\s*:\s*([^\s`]+)",
@@ -89,6 +121,71 @@ def extract_final_smiles(text: str) -> str | None:
         if line.strip() and not line.strip().startswith("```")
     ]
     return lines[-1].strip() if lines else None
+
+
+def _parse_json_payload(text: str) -> Any | None:
+    """Parse direct or fenced JSON model output."""
+    stripped = str(text or "").strip()
+    candidates = [stripped]
+    fenced_blocks = re.findall(
+        r"```(?:json)?\s*\n?(.*?)```",
+        stripped,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    candidates.extend(block.strip() for block in fenced_blocks)
+    for candidate in candidates:
+        if not candidate:
+            continue
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+    return None
+
+
+def _extract_smiles_from_payload(payload: Any) -> str | None:
+    """Extract ``smiles`` from JSON or function-call-style arguments."""
+    if isinstance(payload, list):
+        for item in payload:
+            smiles = _extract_smiles_from_payload(item)
+            if smiles is not None:
+                return smiles
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if "smiles" in payload:
+        value = payload["smiles"]
+        return None if value is None else str(value).strip() or None
+    arguments = payload.get("arguments")
+    if isinstance(arguments, str):
+        try:
+            arguments = json.loads(arguments)
+        except json.JSONDecodeError:
+            arguments = None
+    smiles = _extract_smiles_from_payload(arguments)
+    if smiles is not None:
+        return smiles
+    function_payload = payload.get("function")
+    return _extract_smiles_from_payload(function_payload)
+
+
+def _payload_has_smiles_key(payload: Any) -> bool:
+    """Return whether a JSON/function-call payload contains a smiles field."""
+    if isinstance(payload, list):
+        return any(_payload_has_smiles_key(item) for item in payload)
+    if not isinstance(payload, dict):
+        return False
+    if "smiles" in payload:
+        return True
+    arguments = payload.get("arguments")
+    if isinstance(arguments, str):
+        try:
+            arguments = json.loads(arguments)
+        except json.JSONDecodeError:
+            arguments = None
+    if _payload_has_smiles_key(arguments):
+        return True
+    return _payload_has_smiles_key(payload.get("function"))
 
 
 def predicted_smiles(text: str) -> str | None:

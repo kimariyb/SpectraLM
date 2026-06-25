@@ -43,7 +43,7 @@ def test_structure_task_can_supervise_connectivity_only(ethanol_sample) -> None:
         target_stereochemistry="remove",
     )
 
-    assert "@" not in example.target
+    assert "@" not in json.loads(example.target)["smiles"]
 
 
 def test_functional_group_ontology_covers_requested_hetero_elements() -> None:
@@ -110,12 +110,13 @@ def test_weighted_task_selection_is_stable_per_sample() -> None:
 
 
 def test_structure_prediction_task_preserves_smiles_target(ethanol_sample) -> None:
-    """The main task should remain direct canonical-SMILES prediction."""
+    """The main task should supervise a canonical-SMILES JSON object."""
     example = build_task_example(ethanol_sample, STRUCTURE_PREDICTION)
 
     assert example.task == STRUCTURE_PREDICTION
-    assert example.target == "CCO"
-    assert "canonical SMILES" in example.prompt
+    assert json.loads(example.target) == {"smiles": "CCO"}
+    assert '"smiles"' in example.prompt
+    assert "JSON" in example.prompt
 
 
 def test_functional_group_task_uses_controlled_json_target(ethanol_sample) -> None:
@@ -143,25 +144,26 @@ def test_candidate_ranking_task_selects_target_from_candidates(ethanol_sample) -
         candidates=["COC", "CCO"],
     )
 
-    assert example.target == "CCO"
+    assert json.loads(example.target) == {"smiles": "CCO"}
     assert "1. COC" in example.prompt
     assert "2. CCO" in example.prompt
     assert "best candidate" in example.prompt.lower()
+    assert '"smiles"' in example.prompt
 
 
-def test_candidate_ranking_prompt_describes_image_only_evidence(
+def test_candidate_ranking_prompt_is_text_only(
     ethanol_sample,
 ) -> None:
-    """Auxiliary tasks must not claim that ablated peak tables are present."""
+    """Auxiliary ranking should use peak tables and never visual evidence."""
     example = build_task_example(
         ethanol_sample,
         CANDIDATE_RANKING,
         candidates=["CCO", "COC"],
-        input_mode="image_only",
     )
 
-    assert "No numerical peak tables are available" in example.prompt
-    assert "## 1H NMR Peak Table" not in example.prompt
+    assert "Use the numerical 1H and 13C peak tables" in example.prompt
+    assert "image" not in example.prompt.lower()
+    assert "1H NMR:" in example.prompt
     assert "1. CCO" in example.prompt
     assert "2. COC" in example.prompt
 
@@ -188,9 +190,9 @@ def test_candidate_ranking_inference_prompt_does_not_require_target() -> None:
         sample,
         ["OCC", "COC"],
         include_formula=True,
-        input_mode="full",
     )
 
     assert "1. CCO" in prompt
     assert "2. COC" in prompt
     assert "C2H6O" in prompt
+    assert '"smiles"' in prompt

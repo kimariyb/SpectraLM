@@ -1,5 +1,6 @@
-# Short text-only protocol check for one CUDA GPU.
+# Stage 2 peak-table-only structure SFT.
 model_path: /mnt/data/kimariyb/models/Qwen3-8B
+initial_adapter_path: outputs/experiments/multitask/stage1-no-formula-10k-seed3407/best_model
 max_seq_length: 8192
 load_in_4bit: true
 use_gradient_checkpointing: false
@@ -9,40 +10,38 @@ train_split_name: clean_10k_train
 eval_split_name: clean_10k_val
 prompt_template_index: 0
 target_stereochemistry: remove
-include_formula: true
+include_formula: false
 rule_context_enabled: false
 max_rule_evidence: 12
 task_weights:
   structure_prediction: 1.0
-max_train_samples: 256
-max_eval_samples: 64
+max_eval_samples: 1000
 
 dry_run: false
-output_dir: outputs/experiments/structure/smoke-formula-10k-seed3407
-per_device_train_batch_size: 8
-per_device_eval_batch_size: 4
+output_dir: outputs/experiments/structure/stage2-no-formula-10k-seed3407
+per_device_train_batch_size: 16
+per_device_eval_batch_size: 8
 eval_accumulation_steps: 1
 gradient_accumulation_steps: 4
-dataloader_num_workers: 4
-dataloader_prefetch_factor: 2
+dataloader_num_workers: 8
+dataloader_prefetch_factor: 4
 dataloader_persistent_workers: true
 dataloader_pin_memory: true
 lora_r: 16
 lora_alpha: 32
 lora_dropout: 0.0
-num_train_epochs: 1
-max_steps: 20
-learning_rate: 1.0e-4
+num_train_epochs: 2
+learning_rate: 5.0e-5
 weight_decay: 0.01
-warmup_steps: 2
+warmup_steps: 40
 lr_scheduler_type: cosine
 optim: adamw_8bit
 bf16: true
 fp16: false
-logging_steps: 1
-eval_steps: 10
-save_steps: 10
+logging_steps: 10
+eval_steps: 40
+save_steps: 40
 early_stopping_patience: 3
 early_stopping_threshold: 0.001
-save_total_limit: 2
+save_total_limit: 3
 seed: 3407

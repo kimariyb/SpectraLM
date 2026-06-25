@@ -65,6 +65,13 @@ def test_resolve_ranked_candidate_accepts_canonical_equivalent() -> None:
     assert selection.ranking_failed is False
 
 
+def test_resolve_ranked_candidate_accepts_json_smiles_response() -> None:
+    selection = resolve_ranked_candidate(("CCO", "COC"), '{"smiles":"OCC"}')
+
+    assert selection.prediction == "CCO"
+    assert selection.ranking_failed is False
+
+
 def test_constrained_summary_counts_failures_in_denominator() -> None:
     rows = [
         {

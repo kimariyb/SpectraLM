@@ -204,6 +204,77 @@ def scaffold_balanced_order(
     return ordered
 
 
+def assign_grouped_random_splits(
+    rows: list[dict[str, Any]],
+    *,
+    seed: int = 3407,
+    val_fraction: float = 0.1,
+    test_fraction: float = 0.1,
+) -> dict[str, list[dict[str, Any]]]:
+    """Assign complete canonical-structure groups to deterministic random splits.
+
+    Parameters
+    ----------
+    rows
+        Manifest rows to split.
+    seed
+        Random seed used for deterministic group shuffling.
+    val_fraction
+        Target validation fraction.
+    test_fraction
+        Target test fraction.
+
+    Returns
+    -------
+    dict[str, list[dict[str, Any]]]
+        Rows grouped under ``train``, ``val``, and ``test`` keys.
+    """
+    if not 0.0 <= float(val_fraction) < 1.0:
+        raise ValueError("val_fraction must be between 0 and 1")
+    if not 0.0 <= float(test_fraction) < 1.0:
+        raise ValueError("test_fraction must be between 0 and 1")
+    if float(val_fraction) + float(test_fraction) >= 1.0:
+        raise ValueError("validation and test fractions must leave training rows")
+
+    by_structure: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        key = str(row.get("canonical_smiles") or row.get("id") or "")
+        by_structure[key].append(row)
+
+    groups = list(by_structure.values())
+    for group in groups:
+        group.sort(key=lambda item: str(item.get("id", "")))
+    rng = random.Random(seed)
+    rng.shuffle(groups)
+
+    total = len(rows)
+    targets = {
+        "val": int(round(total * float(val_fraction))),
+        "test": int(round(total * float(test_fraction))),
+    }
+    assigned: dict[str, list[dict[str, Any]]] = {
+        "train": [],
+        "val": [],
+        "test": [],
+    }
+
+    for group in groups:
+        split = min(
+            ("val", "test"),
+            key=lambda name: (
+                len(assigned[name]) / max(targets[name], 1)
+                if targets[name]
+                else 1.0,
+                len(assigned[name]),
+            ),
+        )
+        if targets[split] == 0 or len(assigned[split]) >= targets[split]:
+            split = "train"
+        assigned[split].extend(group)
+
+    return assigned
+
+
 def summarize_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
     """Summarize selected manifest rows."""
     split_counts = Counter(row.get("split", "") for row in rows)
@@ -291,17 +362,25 @@ def build_subsets(
     }
 
     for requested_size in sorted(set(int(size) for size in subset_sizes)):
+        requested_test_size = int(
+            round(requested_size * float(test_fraction))
+        )
         if val_fraction is None:
-            requested_train_size = requested_size
             requested_val_size = int(val_size)
+            requested_train_size = (
+                requested_size - requested_val_size - requested_test_size
+            )
         else:
             requested_val_size = int(
                 round(requested_size * float(val_fraction))
             )
-            requested_train_size = requested_size - requested_val_size
-        requested_test_size = int(
-            round(requested_size * float(test_fraction))
-        )
+            requested_train_size = (
+                requested_size - requested_val_size - requested_test_size
+            )
+        if requested_train_size <= 0:
+            raise ValueError(
+                "subset size must exceed validation and test allocations"
+            )
         selected_train = ranked["train"][: min(
             requested_train_size,
             len(ranked["train"]),

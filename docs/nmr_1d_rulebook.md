@@ -22,8 +22,6 @@ multiplicity, coupling constants, symmetry, and cross-nucleus consistency.
 
 The current project uses only:
 
-- one 1D `1H NMR` spectrum image;
-- one 1D broadband-decoupled `13C NMR` spectrum image;
 - normalized 1H shifts, multiplicities, coupling constants, and integrations;
 - normalized 13C shifts;
 - optional molecular formula;
@@ -41,17 +39,17 @@ This project does not use DEPT, APT, COSY, TOCSY, HSQC, HMBC, NOE/NOESY, or
 other multidimensional or edited experiments. The rule engine must not infer
 correlations that are unavailable in the input.
 
-The generated images do not contain simulated solvent, reference, or impurity
-peaks. Therefore:
+The generated benchmark peak tables do not contain simulated solvent,
+reference, or impurity peaks. Therefore:
 
 - no solvent-peak removal rule is applied;
 - the absence of a solvent peak is not evidence of sample purity;
 - solvent metadata may describe the source measurement but is not itself a
   structural signal.
 
-The rendered spectra originate from normalized peak tables. Conclusions from
-this benchmark do not automatically transfer to raw instrument spectra with
-phase errors, baseline drift, spinning sidebands, truncation, impurities, or
+The model input originates from normalized peak tables. Conclusions from this
+benchmark do not automatically transfer to raw instrument spectra with phase
+errors, baseline drift, spinning sidebands, truncation, impurities, or
 unresolved solvent peaks.
 
 ### 2.3 Element policy
@@ -80,7 +78,7 @@ used:
 | `weak` | Broad hypothesis-generating evidence | saturated alkyl shift region |
 
 A hard rule may reject a candidate. A moderate or weak chemical-shift rule
-should not reject a structure by itself. When rule context is added to a VLM
+should not reject a structure by itself. When rule context is added to an LLM
 prompt, evidence is ordered `hard -> strong -> moderate -> weak` and truncated
 to the configured maximum.
 
@@ -94,7 +92,7 @@ checking the global constraints is a common source of confirmation bias.
 1. Confirm that both nuclei have at least one valid signal.
 2. Verify that every 1H peak has a plausible shift and integration.
 3. Treat missing J values as unavailable, not as zero coupling.
-4. Compare peak tables with rendered images for truncation or ordering errors.
+4. Check peak-table ordering and missing-value handling before assigning fragments.
 5. Record broad, overlapping, or uncertain signals before assigning fragments.
 
 ### Step 2: Establish global formula constraints

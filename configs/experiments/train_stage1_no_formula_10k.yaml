@@ -1,25 +1,15 @@
-# Stage 1: 9k-train/1k-validation multitask and mixed-modality SFT.
-model_path: /mnt/data/kimariyb/models/Qwen3.5-9B
+# Stage 1 peak-table-only text SFT with auxiliary tasks.
+model_path: /mnt/data/kimariyb/models/Qwen3-8B
 max_seq_length: 8192
 load_in_4bit: true
 use_gradient_checkpointing: false
 
 dataset_dir: dataset/paired_jsonl_full
-image_backend: pre_rendered
-rendered_image_dir: dataset/paired_jsonl_full/rendered/512x288
-missing_image_policy: error
 train_split_name: clean_10k_train
 eval_split_name: clean_10k_val
-input_mode: full
-input_mode_weights:
-  full: 0.50
-  image_only: 0.25
-  peak_table_only: 0.25
-eval_input_mode_weights:
-  full: 1.0
 prompt_template_index: 0
 target_stereochemistry: remove
-include_formula: true
+include_formula: false
 rule_context_enabled: false
 max_rule_evidence: 12
 task_weights:
@@ -29,14 +19,10 @@ task_weights:
   spectral_region_classification: 0.10
 train_candidate_sidecar_path: dataset/paired_jsonl_full/candidate_sets_clean_10k_train.jsonl
 eval_candidate_sidecar_path: dataset/paired_jsonl_full/candidate_sets_clean_10k_val.jsonl
-h_snr: 500.0
-c_snr: 200.0
-render_seed: 3407
-image_size: [512, 288]
 max_eval_samples: 1000
 
 dry_run: false
-output_dir: outputs/experiments/multitask/stage1-10k-seed3407
+output_dir: outputs/experiments/multitask/stage1-no-formula-10k-seed3407
 per_device_train_batch_size: 16
 per_device_eval_batch_size: 8
 eval_accumulation_steps: 1

@@ -1,4 +1,4 @@
-# Short text-only protocol check for one CUDA GPU.
+# Stage 1 formula-conditioned text SFT with auxiliary tasks.
 model_path: /mnt/data/kimariyb/models/Qwen3-8B
 max_seq_length: 8192
 load_in_4bit: true
@@ -13,36 +13,39 @@ include_formula: true
 rule_context_enabled: false
 max_rule_evidence: 12
 task_weights:
-  structure_prediction: 1.0
-max_train_samples: 256
-max_eval_samples: 64
+  structure_prediction: 0.40
+  functional_group_recognition: 0.20
+  candidate_ranking: 0.30
+  spectral_region_classification: 0.10
+train_candidate_sidecar_path: dataset/paired_jsonl_full/candidate_sets_clean_10k_train.jsonl
+eval_candidate_sidecar_path: dataset/paired_jsonl_full/candidate_sets_clean_10k_val.jsonl
+max_eval_samples: 1000
 
 dry_run: false
-output_dir: outputs/experiments/structure/smoke-formula-10k-seed3407
-per_device_train_batch_size: 8
-per_device_eval_batch_size: 4
+output_dir: outputs/experiments/multitask/stage1-formula-10k-seed3407
+per_device_train_batch_size: 16
+per_device_eval_batch_size: 8
 eval_accumulation_steps: 1
 gradient_accumulation_steps: 4
-dataloader_num_workers: 4
-dataloader_prefetch_factor: 2
+dataloader_num_workers: 8
+dataloader_prefetch_factor: 4
 dataloader_persistent_workers: true
 dataloader_pin_memory: true
 lora_r: 16
 lora_alpha: 32
 lora_dropout: 0.0
 num_train_epochs: 1
-max_steps: 20
 learning_rate: 1.0e-4
 weight_decay: 0.01
-warmup_steps: 2
+warmup_steps: 40
 lr_scheduler_type: cosine
 optim: adamw_8bit
 bf16: true
 fp16: false
-logging_steps: 1
-eval_steps: 10
-save_steps: 10
+logging_steps: 10
+eval_steps: 40
+save_steps: 40
 early_stopping_patience: 3
 early_stopping_threshold: 0.001
-save_total_limit: 2
+save_total_limit: 3
 seed: 3407

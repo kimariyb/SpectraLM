@@ -1,4 +1,4 @@
-"""Lazy JSONL dataset and spectrum-image loading for NMR structure tuning."""
+"""Text-only lazy JSONL dataset for NMR structure tuning."""
 
 from __future__ import annotations
 
@@ -10,18 +10,8 @@ from pathlib import Path
 from typing import Any, BinaryIO, Iterator, Mapping, Sequence
 
 import numpy as np
-from PIL import Image as PILImage
-from PIL.Image import Resampling
 from torch.utils.data import Dataset
 
-from src.data.modalities import (
-    FULL,
-    build_user_content,
-    input_mode_uses_images,
-    normalize_input_mode_weights,
-    select_weighted_input_mode,
-    validate_input_configuration,
-)
 from src.data.tasks import (
     CANDIDATE_RANKING,
     STRUCTURE_PREDICTION,
@@ -30,14 +20,14 @@ from src.data.tasks import (
     select_weighted_task,
 )
 from src.evaluation.prompts import (
+    SYSTEM_PROMPT,
     select_structure_prompt,
-    structure_prompts_for_mode,
+    structure_prompts,
 )
-from src.spectra.render import carbon_to_spectra, hydrogen_to_spectra
 
 
 _OFFSET_CACHE_DIRNAME = ".offset_cache"
-_OFFSET_CACHE_VERSION = 1
+_OFFSET_CACHE_VERSION = 2
 
 
 def _safe_cache_key(sample_id: str) -> str:
@@ -56,19 +46,6 @@ def _atomic_write_text(path: Path, text: str) -> None:
     tmp.replace(path)
 
 
-def _stable_render_seed(
-    base_seed: int | None,
-    sample_id: str,
-    nucleus: str,
-) -> int | None:
-    """Derive a deterministic per-sample render seed."""
-    if base_seed is None:
-        return None
-    payload = f"{base_seed}:{sample_id}:{nucleus}".encode("utf-8")
-    digest = hashlib.sha256(payload).digest()
-    return int.from_bytes(digest[:4], byteorder="big", signed=False)
-
-
 def _jsonl_sample_iter(path: Path) -> Iterator[dict[str, Any]]:
     """Yield non-empty sample dictionaries from a JSONL file."""
     with path.open("r", encoding="utf-8") as handle:
@@ -79,18 +56,7 @@ def _jsonl_sample_iter(path: Path) -> Iterator[dict[str, Any]]:
 
 
 def load_candidate_map(path: str | Path) -> dict[str, list[str]]:
-    """Load a candidate-ranking JSONL sidecar keyed by sample ID.
-
-    Parameters
-    ----------
-    path
-        Candidate sidecar path.
-
-    Returns
-    -------
-    dict[str, list[str]]
-        Candidate SMILES for each sample with formula-matched alternatives.
-    """
+    """Load a candidate-ranking JSONL sidecar keyed by sample ID."""
     candidate_map: dict[str, list[str]] = {}
     for row in _jsonl_sample_iter(Path(path)):
         sample_id = str(row.get("id", ""))
@@ -135,7 +101,7 @@ def _load_jsonl_samples(base: Path, split: str | None) -> list[dict[str, Any]]:
 
 
 class NMRMessageTransform:
-    """Convert raw NMR samples and images into configurable SFT tasks."""
+    """Convert raw NMR samples into text-only SFT chat messages."""
 
     def __init__(
         self,
@@ -146,8 +112,6 @@ class NMRMessageTransform:
         max_rule_evidence: int = 12,
         task_weights: Mapping[str, float] | None = None,
         candidate_map: Mapping[str, Sequence[str]] | None = None,
-        input_mode: str = FULL,
-        input_mode_weights: Mapping[str, float] | None = None,
         prompt_template_index: int | None = None,
         target_stereochemistry: str = "preserve",
     ) -> None:
@@ -157,25 +121,6 @@ class NMRMessageTransform:
         self.include_rule_context = bool(include_rule_context)
         self.max_rule_evidence = int(max_rule_evidence)
         self.task_weights = normalize_task_weights(task_weights)
-        self.input_mode = validate_input_configuration(
-            input_mode,
-            include_formula=self.include_formula,
-            include_rule_context=self.include_rule_context,
-            task_names=self.task_weights,
-        )
-        self.mixed_input_modes = input_mode_weights is not None
-        self.input_mode_weights = (
-            normalize_input_mode_weights(input_mode_weights)
-            if input_mode_weights is not None
-            else {self.input_mode: 1.0}
-        )
-        for weighted_mode in self.input_mode_weights:
-            validate_input_configuration(
-                weighted_mode,
-                include_formula=self.include_formula,
-                include_rule_context=self.include_rule_context,
-                task_names=self.task_weights,
-            )
         self.target_stereochemistry = target_stereochemistry
         self.prompt_template_index = (
             None
@@ -183,24 +128,16 @@ class NMRMessageTransform:
             else int(prompt_template_index)
         )
         if self.prompt_template_index is not None:
-            for weighted_mode in self.input_mode_weights:
-                select_structure_prompt(
-                    self.prompt_template_index,
-                    input_mode=weighted_mode,
-                )
+            select_structure_prompt(self.prompt_template_index)
         self.task_names = tuple(self.task_weights)
         self.candidate_map = dict(candidate_map or {})
 
     def __call__(self, batch: dict[str, Any]) -> dict[str, list[Any]]:
-        """Build image-plus-table prompts and task-specific targets."""
+        """Build text prompts and task-specific targets."""
         samples = self._as_list(batch["sample"])
-        h_images = self._as_list(batch.get("h_image", [None] * len(samples)))
-        c_images = self._as_list(batch.get("c_image", [None] * len(samples)))
-        messages_batch: list[list[dict[str, Any]]] = []
+        messages_batch: list[list[dict[str, str]]] = []
 
-        for h_image, c_image, sample in zip(h_images, c_images, samples):
-            selected_mode = self.input_mode_for_sample(sample)
-            uses_images = input_mode_uses_images(selected_mode)
+        for sample in samples:
             task = select_weighted_task(
                 str(sample.get("id", "")),
                 seed=self.seed,
@@ -211,16 +148,9 @@ class NMRMessageTransform:
             if task == CANDIDATE_RANKING and not candidates:
                 task = STRUCTURE_PREDICTION
             if self.prompt_template_index is None:
-                prompt = str(
-                    self.rng.choice(
-                        structure_prompts_for_mode(selected_mode)
-                    )
-                )
+                prompt = str(self.rng.choice(structure_prompts()))
             else:
-                prompt = select_structure_prompt(
-                    self.prompt_template_index,
-                    input_mode=selected_mode,
-                )
+                prompt = select_structure_prompt(self.prompt_template_index)
             example = build_task_example(
                 sample,
                 task,
@@ -229,38 +159,16 @@ class NMRMessageTransform:
                 include_formula=self.include_formula,
                 include_rule_context=self.include_rule_context,
                 max_rule_evidence=self.max_rule_evidence,
-                input_mode=selected_mode,
                 target_stereochemistry=self.target_stereochemistry,
             )
             messages_batch.append(
                 [
-                    {
-                        "role": "user",
-                        "content": build_user_content(
-                            example.prompt,
-                            input_mode=selected_mode,
-                            images=(h_image, c_image) if uses_images else (),
-                        ),
-                    },
-                    {
-                        "role": "assistant",
-                        "content": [
-                            {"type": "text", "text": example.target}
-                        ],
-                    },
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": example.prompt},
+                    {"role": "assistant", "content": example.target},
                 ]
             )
         return {"messages": messages_batch}
-
-    def input_mode_for_sample(self, sample: Mapping[str, Any]) -> str:
-        """Return one stable curriculum mode for a sample."""
-        if not self.mixed_input_modes:
-            return self.input_mode
-        return select_weighted_input_mode(
-            str(sample.get("id", "")),
-            seed=self.seed,
-            weights=self.input_mode_weights,
-        )
 
     @staticmethod
     def _as_list(value: Any) -> list[Any]:
@@ -268,104 +176,8 @@ class NMRMessageTransform:
         return value if isinstance(value, list) else [value]
 
 
-def _resize_image(
-    image: PILImage.Image,
-    image_size: tuple[int, int] | list[int] | None,
-) -> PILImage.Image:
-    """Convert an image to RGB and resize only when dimensions differ."""
-    image = image.convert("RGB")
-    target_size = tuple(image_size) if image_size is not None else None
-    if target_size is None or image.size == target_size:
-        return image
-    return image.resize(target_size, Resampling.LANCZOS)
-
-
-def render_sample_images(
-    sample: dict[str, Any],
-    *,
-    h_snr: float = 500.0,
-    c_snr: float = 300.0,
-    render_seed: int | None = 3407,
-    image_size: tuple[int, int] | list[int] | None = None,
-) -> tuple[PILImage.Image, PILImage.Image]:
-    """Render proton and carbon spectrum images for one sample."""
-    sample_id = str(sample.get("id", "unknown"))
-    h_image = hydrogen_to_spectra(
-        sample,
-        snr=h_snr,
-        seed=_stable_render_seed(render_seed, sample_id, "1h"),
-    )
-    c_image = carbon_to_spectra(
-        sample,
-        snr=c_snr,
-        seed=_stable_render_seed(render_seed, sample_id, "13c"),
-    )
-    return (
-        _resize_image(h_image, image_size),
-        _resize_image(c_image, image_size),
-    )
-
-
-def load_sample_images(
-    sample: dict[str, Any],
-    *,
-    image_backend: str = "lazy_render",
-    rendered_image_dir: str | Path | None = None,
-    missing_image_policy: str = "error",
-    h_snr: float = 500.0,
-    c_snr: float = 300.0,
-    render_seed: int | None = 3407,
-    image_size: tuple[int, int] | list[int] | None = None,
-) -> tuple[PILImage.Image, PILImage.Image]:
-    """Load pre-rendered spectra or render them on demand."""
-    if image_backend not in {"lazy_render", "pre_rendered"}:
-        raise ValueError(
-            "image_backend must be 'lazy_render' or 'pre_rendered', "
-            f"got {image_backend!r}"
-        )
-    if missing_image_policy not in {"error", "lazy_render"}:
-        raise ValueError(
-            "missing_image_policy must be 'error' or 'lazy_render', "
-            f"got {missing_image_policy!r}"
-        )
-
-    def render() -> tuple[PILImage.Image, PILImage.Image]:
-        return render_sample_images(
-            sample,
-            h_snr=h_snr,
-            c_snr=c_snr,
-            render_seed=render_seed,
-            image_size=image_size,
-        )
-
-    if image_backend == "lazy_render":
-        return render()
-    if rendered_image_dir is None:
-        raise ValueError(
-            "rendered_image_dir is required when image_backend='pre_rendered'."
-        )
-
-    cache_key = _safe_cache_key(str(sample.get("id", "unknown")))
-    rendered_dir = Path(rendered_image_dir)
-    h_path = rendered_dir / f"{cache_key}_1h.png"
-    c_path = rendered_dir / f"{cache_key}_13c.png"
-    missing = [str(path) for path in (h_path, c_path) if not path.exists()]
-    if missing:
-        if missing_image_policy == "lazy_render":
-            return render()
-        raise FileNotFoundError(
-            "Missing pre-rendered NMR image(s): " + ", ".join(missing)
-        )
-
-    with PILImage.open(h_path) as h_image:
-        h_loaded = _resize_image(h_image, image_size)
-    with PILImage.open(c_path) as c_image:
-        c_loaded = _resize_image(c_image, image_size)
-    return h_loaded, c_loaded
-
-
 class LazyNMRJsonlDataset(Dataset):
-    """Offset-indexed JSONL dataset for million-scale VLM training."""
+    """Offset-indexed JSONL dataset for million-scale text SFT."""
 
     def __init__(
         self,
@@ -378,15 +190,6 @@ class LazyNMRJsonlDataset(Dataset):
         task_weights: Mapping[str, float] | None = None,
         candidate_sidecar_path: str | Path | None = None,
         seed: int | None = 3407,
-        h_snr: float = 500.0,
-        c_snr: float = 300.0,
-        render_seed: int | None = 3407,
-        image_size: tuple[int, int] | list[int] | None = None,
-        image_backend: str = "lazy_render",
-        rendered_image_dir: str | Path | None = None,
-        missing_image_policy: str = "error",
-        input_mode: str = FULL,
-        input_mode_weights: Mapping[str, float] | None = None,
         prompt_template_index: int | None = None,
         target_stereochemistry: str = "preserve",
     ) -> None:
@@ -394,45 +197,8 @@ class LazyNMRJsonlDataset(Dataset):
         self.jsonl_path = self.dataset_dir / "samples.jsonl"
         if not self.jsonl_path.exists():
             raise FileNotFoundError(f"JSONL dataset not found: {self.jsonl_path}")
-        if image_backend not in {"lazy_render", "pre_rendered"}:
-            raise ValueError(f"Unsupported image_backend: {image_backend!r}")
-        if missing_image_policy not in {"error", "lazy_render"}:
-            raise ValueError(
-                f"Unsupported missing_image_policy: {missing_image_policy!r}"
-            )
-        self.input_mode = validate_input_configuration(
-            input_mode,
-            include_formula=bool(include_formula),
-            include_rule_context=bool(include_rule_context),
-            task_names=normalize_task_weights(task_weights),
-        )
-        normalized_mode_weights = (
-            normalize_input_mode_weights(input_mode_weights)
-            if input_mode_weights is not None
-            else {self.input_mode: 1.0}
-        )
-        self.uses_images = any(
-            input_mode_uses_images(mode) for mode in normalized_mode_weights
-        )
-        if (
-            self.uses_images
-            and image_backend == "pre_rendered"
-            and rendered_image_dir is None
-        ):
-            raise ValueError(
-                "rendered_image_dir is required when image_backend='pre_rendered'."
-            )
 
         self.split = split
-        self.h_snr = float(h_snr)
-        self.c_snr = float(c_snr)
-        self.render_seed = render_seed
-        self.image_size = tuple(image_size) if image_size is not None else None
-        self.image_backend = image_backend
-        self.rendered_image_dir = (
-            Path(rendered_image_dir) if rendered_image_dir is not None else None
-        )
-        self.missing_image_policy = missing_image_policy
         self._jsonl_handle: BinaryIO | None = None
         self._jsonl_handle_pid: int | None = None
         self.transform = NMRMessageTransform(
@@ -441,8 +207,6 @@ class LazyNMRJsonlDataset(Dataset):
             include_rule_context=include_rule_context,
             max_rule_evidence=max_rule_evidence,
             task_weights=task_weights,
-            input_mode=self.input_mode,
-            input_mode_weights=normalized_mode_weights,
             prompt_template_index=prompt_template_index,
             target_stereochemistry=target_stereochemistry,
             candidate_map=(
@@ -622,24 +386,9 @@ class LazyNMRJsonlDataset(Dataset):
             pass
 
     def __getitem__(self, idx: int) -> dict[str, Any]:
-        """Return one multimodal NMR supervision instruction."""
+        """Return one text-only NMR supervision instruction."""
         sample = self._load_sample_at(self.offsets[idx])
-        batch: dict[str, list[Any]] = {"sample": [sample]}
-        selected_mode = self.transform.input_mode_for_sample(sample)
-        if input_mode_uses_images(selected_mode):
-            h_image, c_image = load_sample_images(
-                sample,
-                image_backend=self.image_backend,
-                rendered_image_dir=self.rendered_image_dir,
-                missing_image_policy=self.missing_image_policy,
-                h_snr=self.h_snr,
-                c_snr=self.c_snr,
-                render_seed=self.render_seed,
-                image_size=self.image_size,
-            )
-            batch["h_image"] = [h_image]
-            batch["c_image"] = [c_image]
-        transformed = self.transform(batch)
+        transformed = self.transform({"sample": [sample]})
         return {"messages": transformed["messages"][0]}
 
 
@@ -653,19 +402,10 @@ def load_lazy_nmr_dataset(
     task_weights: Mapping[str, float] | None = None,
     candidate_sidecar_path: str | Path | None = None,
     seed: int | None = 3407,
-    h_snr: float = 500.0,
-    c_snr: float = 300.0,
-    render_seed: int | None = 3407,
-    image_size: tuple[int, int] | list[int] | None = None,
-    image_backend: str = "lazy_render",
-    rendered_image_dir: str | Path | None = None,
-    missing_image_policy: str = "error",
-    input_mode: str = FULL,
-    input_mode_weights: Mapping[str, float] | None = None,
     prompt_template_index: int | None = None,
     target_stereochemistry: str = "preserve",
 ) -> LazyNMRJsonlDataset:
-    """Create the active lazy JSONL training dataset."""
+    """Create the active lazy JSONL text training dataset."""
     return LazyNMRJsonlDataset(
         dataset_dir,
         split=split,
@@ -675,15 +415,6 @@ def load_lazy_nmr_dataset(
         task_weights=task_weights,
         candidate_sidecar_path=candidate_sidecar_path,
         seed=seed,
-        h_snr=h_snr,
-        c_snr=c_snr,
-        render_seed=render_seed,
-        image_size=image_size,
-        image_backend=image_backend,
-        rendered_image_dir=rendered_image_dir,
-        missing_image_policy=missing_image_policy,
-        input_mode=input_mode,
-        input_mode_weights=input_mode_weights,
         prompt_template_index=prompt_template_index,
         target_stereochemistry=target_stereochemistry,
     )

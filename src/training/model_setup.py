@@ -10,7 +10,7 @@ def setup_lora_model(
     model: Any,
     config: dict[str, Any],
     *,
-    fast_vision_model: Any,
+    fast_language_model: Any,
     peft_model_class: Any,
 ) -> Any:
     """Create a new adapter or continue an existing trainable adapter."""
@@ -26,12 +26,17 @@ def setup_lora_model(
             str(path),
             is_trainable=True,
         )
-    return fast_vision_model.get_peft_model(
+    return fast_language_model.get_peft_model(
         model,
-        finetune_vision_layers=True,
-        finetune_language_layers=True,
-        finetune_attention_modules=True,
-        finetune_mlp_modules=True,
+        target_modules=[
+            "q_proj",
+            "k_proj",
+            "v_proj",
+            "o_proj",
+            "gate_proj",
+            "up_proj",
+            "down_proj",
+        ],
         r=int(config.get("lora_r", 16)),
         lora_alpha=int(config.get("lora_alpha", 16)),
         lora_dropout=float(config.get("lora_dropout", 0)),

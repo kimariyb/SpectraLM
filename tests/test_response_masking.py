@@ -49,18 +49,17 @@ def test_validate_response_only_batch_accepts_exact_assistant_target() -> None:
     }
 
 
-def test_validate_response_only_batch_accepts_qwen_empty_thinking_prefix() -> None:
-    """Qwen3.5 non-thinking supervision may prepend an empty think block."""
-    stats = _validator()(
-        {
-            "input_ids": [[10, 11, 12, 13]],
-            "labels": [[-100, -100, 12, 13]],
-        },
-        _FakeTokenizer("<think>\n\n</think>\n\nCCO"),
-        expected_response="CCO",
-    )
-
-    assert stats["decoded_response"] == "CCO"
+def test_validate_response_only_batch_rejects_thinking_prefix() -> None:
+    """No thinking tags should be supervised in text-only non-thinking SFT."""
+    with pytest.raises(RuntimeError, match="thinking tokens"):
+        _validator()(
+            {
+                "input_ids": [[10, 11, 12, 13]],
+                "labels": [[-100, -100, 12, 13]],
+            },
+            _FakeTokenizer("<think>\n\n</think>\n\nCCO"),
+            expected_response="CCO",
+        )
 
 
 def test_non_thinking_generation_prompt_disables_qwen_thinking() -> None:

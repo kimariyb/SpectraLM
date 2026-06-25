@@ -1,4 +1,4 @@
-"""LoRA/QLoRA fine-tuning entrypoint for SpectraLM VLM experiments.
+"""LoRA/QLoRA fine-tuning entrypoint for SpectraLM text experiments.
 
 Usage::
 
@@ -8,32 +8,31 @@ Usage::
 from __future__ import annotations
 import unsloth
 import sys
-import torch
-from typing import Any
 from pathlib import Path
+from typing import Any
+
+import torch
+from peft import PeftModel
 from torch.utils.data import Subset
 from transformers import EarlyStoppingCallback
-from unsloth import FastVisionModel
-from unsloth.trainer import UnslothVisionDataCollator
-from peft import PeftModel
+from trl import SFTConfig, SFTTrainer
+from unsloth import FastLanguageModel
+
 from src.config import TrainingLoggerCallback, load_config
-from src.logger import TrainingLogger
 from src.data.dataset import load_lazy_nmr_dataset
-from src.data.modalities import normalize_input_mode
 from src.data.tasks import normalize_task_weights
+from src.logger import TrainingLogger
 from src.training.arguments import (
     build_early_stopping_kwargs,
-    build_response_only_collator_kwargs,
     build_sft_kwargs,
-    build_vision_collator_kwargs,
     training_log_dir,
 )
+from src.training.model_setup import setup_lora_model
 from src.training.response_masking import (
     assistant_response_text,
     validate_response_only_batch,
 )
-from src.training.model_setup import setup_lora_model
-from trl import SFTConfig, SFTTrainer
+from src.training.text_collator import TextResponseOnlyCollator
 
 
 def _limit_dataset(dataset, max_samples: int | None):
@@ -45,20 +44,11 @@ def _limit_dataset(dataset, max_samples: int | None):
 
 
 def main(config: dict[str, Any]) -> None:
-    """Run a LoRA fine-tuning job from a configuration dictionary.
-
-    Parameters
-    ----------
-    config
-        Model, dataset, LoRA, and optimization settings for the active
-        lazy-JSONL CUDA training path.
-    """
-    seed: int = config.get("seed", 3407)
-    input_mode = normalize_input_mode(config.get("input_mode", "full"))
+    """Run a text-only LoRA fine-tuning job from a configuration dictionary."""
+    seed = int(config.get("seed", 3407))
     rule_context_enabled = bool(config.get("rule_context_enabled", False))
     task_weights = normalize_task_weights(config.get("task_weights"))
 
-    # 1. Build datasets first so dry-run works without loading a VLM.
     dataset_dir: str = config["dataset_dir"]
     train_split_name: str = config.get("train_split_name", "train")
     eval_split_name: str = config.get("eval_split_name", "validation")
@@ -69,40 +59,22 @@ def main(config: dict[str, Any]) -> None:
         "max_rule_evidence": int(config.get("max_rule_evidence", 12)),
         "task_weights": task_weights,
         "seed": seed,
-        "h_snr": float(config.get("h_snr", 500.0)),
-        "c_snr": float(config.get("c_snr", 300.0)),
-        "render_seed": config.get("render_seed", seed),
-        "image_size": config.get("image_size"),
-        "image_backend": config.get("image_backend", "lazy_render"),
-        "rendered_image_dir": config.get("rendered_image_dir"),
-        "missing_image_policy": config.get("missing_image_policy", "error"),
-        "input_mode": input_mode,
         "prompt_template_index": config.get("prompt_template_index"),
         "target_stereochemistry": config.get(
             "target_stereochemistry", "preserve"
-        ),
-    }
-    train_dataset_kwargs = {
-        **dataset_kwargs,
-        "input_mode_weights": config.get("input_mode_weights"),
-    }
-    eval_dataset_kwargs = {
-        **dataset_kwargs,
-        "input_mode_weights": config.get(
-            "eval_input_mode_weights", {"full": 1.0}
         ),
     }
     train_ds = load_lazy_nmr_dataset(
         dataset_dir,
         split=train_split_name,
         candidate_sidecar_path=config.get("train_candidate_sidecar_path"),
-        **train_dataset_kwargs,
+        **dataset_kwargs,
     )
     eval_ds = load_lazy_nmr_dataset(
         dataset_dir,
         split=eval_split_name,
         candidate_sidecar_path=config.get("eval_candidate_sidecar_path"),
-        **eval_dataset_kwargs,
+        **dataset_kwargs,
     )
 
     train_ds = _limit_dataset(train_ds, config.get("max_train_samples"))
@@ -116,39 +88,35 @@ def main(config: dict[str, Any]) -> None:
         print(f"First sample keys: {list(first.keys())}")
         if "messages" in first:
             print(f"First sample roles: {[msg['role'] for msg in first['messages']]}")
+            print(f"First user prompt:\n{first['messages'][1]['content']}")
+            print(f"First target: {first['messages'][2]['content']}")
         return
 
-    # 2. Load model
-    model, tokenizer = FastVisionModel.from_pretrained(
+    model, tokenizer = FastLanguageModel.from_pretrained(
         config["model_path"],
         max_seq_length=config.get("max_seq_length", 8192),
         load_in_4bit=config.get("load_in_4bit", True),
-        use_gradient_checkpointing=config.get("use_gradient_checkpointing", "unsloth"),
-        attn_implementation="sdpa"
+        use_gradient_checkpointing=config.get(
+            "use_gradient_checkpointing", "unsloth"
+        ),
+        attn_implementation=config.get("attn_implementation", "sdpa"),
     )
 
-    # 3. Apply LoRA adapters
     model = setup_lora_model(
         model,
         config,
-        fast_vision_model=FastVisionModel,
+        fast_language_model=FastLanguageModel,
         peft_model_class=PeftModel,
     )
-
-    # 4. Train
-    FastVisionModel.for_training(model)
+    FastLanguageModel.for_training(model)
 
     sft_kwargs = build_sft_kwargs(config)
     early_stopping_kwargs = build_early_stopping_kwargs(config)
-    vision_collator_kwargs = build_vision_collator_kwargs(config)
-    response_only_kwargs = build_response_only_collator_kwargs()
-
-    data_collator = UnslothVisionDataCollator(
-        model,
+    data_collator = TextResponseOnlyCollator(
         tokenizer,
-        **vision_collator_kwargs,
-        **response_only_kwargs,
+        max_length=config.get("max_seq_length", 8192),
     )
+
     preflight_sample = train_ds[0]
     masking_stats = validate_response_only_batch(
         data_collator([preflight_sample]),
@@ -167,24 +135,25 @@ def main(config: dict[str, Any]) -> None:
         config={
             "model_name": Path(config.get("model_path")).name,
             "initial_adapter_path": config.get("initial_adapter_path"),
-            "learning_rate": sft_kwargs['learning_rate'],
-            "num_train_epochs": sft_kwargs['num_train_epochs'],
-            "per_device_train_batch_size": sft_kwargs["per_device_train_batch_size"],
-            "gradient_accumulation_steps": sft_kwargs['gradient_accumulation_steps'],
-            "per_device_eval_batch_size": sft_kwargs["per_device_eval_batch_size"],
+            "learning_rate": sft_kwargs["learning_rate"],
+            "num_train_epochs": sft_kwargs["num_train_epochs"],
+            "per_device_train_batch_size": sft_kwargs[
+                "per_device_train_batch_size"
+            ],
+            "gradient_accumulation_steps": sft_kwargs[
+                "gradient_accumulation_steps"
+            ],
+            "per_device_eval_batch_size": sft_kwargs[
+                "per_device_eval_batch_size"
+            ],
             "eval_accumulation_steps": sft_kwargs["eval_accumulation_steps"],
             "dataloader_num_workers": sft_kwargs["dataloader_num_workers"],
             "dataloader_prefetch_factor": sft_kwargs.get(
                 "dataloader_prefetch_factor"
             ),
-            "eval_steps": sft_kwargs['eval_steps'],
+            "eval_steps": sft_kwargs["eval_steps"],
             **early_stopping_kwargs,
             "include_formula": config.get("include_formula", True),
-            "input_mode": input_mode,
-            "input_mode_weights": config.get("input_mode_weights"),
-            "eval_input_mode_weights": config.get(
-                "eval_input_mode_weights", {"full": 1.0}
-            ),
             "target_stereochemistry": config.get(
                 "target_stereochemistry", "preserve"
             ),
@@ -198,15 +167,11 @@ def main(config: dict[str, Any]) -> None:
             "eval_candidate_sidecar_path": config.get(
                 "eval_candidate_sidecar_path"
             ),
-            "image_backend": config.get("image_backend", "lazy_render"),
-            "image_size": config.get("image_size"),
-            "collator_resize": vision_collator_kwargs.get("resize"),
             "train_on_responses_only": True,
-            "rendered_image_dir": config.get("rendered_image_dir"),
             "train_split_name": train_split_name,
             "eval_split_name": eval_split_name,
         },
-        run_name="nmr_vl_sft",
+        run_name="nmr_text_sft",
     )
 
     logger_callback = TrainingLoggerCallback(
@@ -233,34 +198,44 @@ def main(config: dict[str, Any]) -> None:
         gradient_checkpointing_kwargs={"use_reentrant": False},
     )
 
-    # @title Show current memory stats
-    gpu_stats = torch.cuda.get_device_properties(0)
-    start_gpu_memory = round(torch.cuda.max_memory_reserved() / 1024 / 1024 / 1024, 3)
-    max_memory = round(gpu_stats.total_memory / 1024 / 1024 / 1024, 3)
-    print(f"GPU = {gpu_stats.name}. Max memory = {max_memory} GB.")
-    print(f"{start_gpu_memory} GB of memory reserved.")
+    start_gpu_memory = 0.0
+    max_memory = 0.0
+    if torch.cuda.is_available():
+        gpu_stats = torch.cuda.get_device_properties(0)
+        start_gpu_memory = round(
+            torch.cuda.max_memory_reserved() / 1024 / 1024 / 1024, 3
+        )
+        max_memory = round(gpu_stats.total_memory / 1024 / 1024 / 1024, 3)
+        print(f"GPU = {gpu_stats.name}. Max memory = {max_memory} GB.")
+        print(f"{start_gpu_memory} GB of memory reserved.")
 
     trainer_stats = trainer.train()
-    
+
     best_model_dir = Path(config.get("output_dir", "outputs")) / "best_model"
     trainer.save_model(best_model_dir)
     tokenizer.save_pretrained(best_model_dir)
 
     print(f"Best model saved to: {best_model_dir}")
-    
-    # Show final memory and time stats
-    used_memory = round(torch.cuda.max_memory_reserved() / 1024 / 1024 / 1024, 3)
-    used_memory_for_lora = round(used_memory - start_gpu_memory, 3)
-    used_percentage = round(used_memory / max_memory * 100, 3)
-    lora_percentage = round(used_memory_for_lora / max_memory * 100, 3)
     print(f"{trainer_stats.metrics['train_runtime']} seconds used for training.")
     print(
-        f"{round(trainer_stats.metrics['train_runtime']/60, 2)} minutes used for training."
+        f"{round(trainer_stats.metrics['train_runtime'] / 60, 2)} "
+        "minutes used for training."
     )
-    print(f"Peak reserved memory = {used_memory} GB.")
-    print(f"Peak reserved memory for training = {used_memory_for_lora} GB.")
-    print(f"Peak reserved memory % of max memory = {used_percentage} %.")
-    print(f"Peak reserved memory for training % of max memory = {lora_percentage} %.")
+
+    if torch.cuda.is_available() and max_memory > 0:
+        used_memory = round(
+            torch.cuda.max_memory_reserved() / 1024 / 1024 / 1024, 3
+        )
+        used_memory_for_lora = round(used_memory - start_gpu_memory, 3)
+        used_percentage = round(used_memory / max_memory * 100, 3)
+        lora_percentage = round(used_memory_for_lora / max_memory * 100, 3)
+        print(f"Peak reserved memory = {used_memory} GB.")
+        print(f"Peak reserved memory for training = {used_memory_for_lora} GB.")
+        print(f"Peak reserved memory % of max memory = {used_percentage} %.")
+        print(
+            "Peak reserved memory for training % of max memory = "
+            f"{lora_percentage} %."
+        )
 
 
 if __name__ == "__main__":

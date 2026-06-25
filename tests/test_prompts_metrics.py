@@ -7,29 +7,32 @@ from src.evaluation.metrics import (
     classify_output_behavior,
     evaluate_candidate_ranking,
     evaluate_structure_prediction,
+    extract_final_smiles,
     tanimoto_similarity,
 )
 from src.evaluation.prompts import (
     STRUCTURE_PROMPTS,
+    SYSTEM_PROMPT,
     build_structure_prompt,
+    format_peak_tables,
     select_structure_prompt,
 )
 
 
 def test_structure_prompt_collection_has_research_grade_constraints() -> None:
-    """Every training template should define the same multimodal task."""
+    """Every training template should define the same text-only NMR task."""
     assert len(STRUCTURE_PROMPTS) == 8
     assert len(set(STRUCTURE_PROMPTS)) == len(STRUCTURE_PROMPTS)
 
     for prompt in STRUCTURE_PROMPTS:
         normalized = " ".join(prompt.split()).lower()
-        assert prompt.count("{peak_tables}") == 1
-        assert "first image" in normalized
-        assert "second image" in normalized
+        assert prompt.count("{spectral_context}") == 1
+        assert "image" not in normalized
         assert "1h nmr" in normalized
         assert "13c nmr" in normalized
-        assert "canonical smiles" in normalized
-        assert "only" in normalized or "nothing else" in normalized
+        assert '"smiles"' in normalized
+        assert "json" in normalized
+        assert "null if insufficient data" in normalized
 
 
 def test_inference_selects_current_prompt_by_explicit_index() -> None:
@@ -39,73 +42,38 @@ def test_inference_selects_current_prompt_by_explicit_index() -> None:
         select_structure_prompt(len(STRUCTURE_PROMPTS))
 
 
-@pytest.mark.parametrize(
-    ("input_mode", "has_images", "has_peak_tables"),
-    [
-        ("full", True, True),
-        ("image_only", True, False),
-        ("peak_table_only", False, True),
-        ("formula_only", False, False),
-    ],
-)
-def test_structure_prompts_expose_only_the_selected_input_modalities(
-    ethanol_sample,
-    input_mode: str,
-    has_images: bool,
-    has_peak_tables: bool,
-) -> None:
-    """Each ablation prompt must describe and include exactly its inputs."""
-    template = select_structure_prompt(0, input_mode=input_mode)
-    prompt = build_structure_prompt(
-        ethanol_sample,
-        template,
-        include_formula=True,
-        input_mode=input_mode,
-    )
-    normalized = " ".join(prompt.lower().split())
-
-    assert ("first image" in normalized) is has_images
-    assert ("## 1h nmr peak table" in prompt.lower()) is has_peak_tables
-    assert ("## 13c nmr peak table" in prompt.lower()) is has_peak_tables
-    assert "Molecular formula: C2H6O" in prompt
+def test_system_prompt_forbids_reasoning_output() -> None:
+    """The system prompt should define a non-thinking NMR text model."""
+    assert "one-dimensional NMR" in SYSTEM_PROMPT
+    assert "do not output reasoning" in SYSTEM_PROMPT.lower()
 
 
-@pytest.mark.parametrize("input_mode", ["image_only", "peak_table_only", "formula_only"])
-def test_non_full_modalities_reject_rule_context(
-    ethanol_sample,
-    input_mode: str,
-) -> None:
-    """Derived rules must not leak omitted spectral evidence into ablations."""
-    template = select_structure_prompt(0, input_mode=input_mode)
+def test_peak_tables_are_stable_and_text_only(ethanol_sample) -> None:
+    """Peak tables should be deterministic and contain no visual language."""
+    rendered = format_peak_tables(ethanol_sample)
 
-    with pytest.raises(ValueError, match="rule context"):
-        build_structure_prompt(
-            ethanol_sample,
-            template,
-            include_formula=True,
-            include_rule_context=True,
-            input_mode=input_mode,
-        )
+    assert "1H NMR:" in rendered
+    assert "13C NMR:" in rendered
+    assert "ppm" in rendered
+    assert "image" not in rendered.lower()
 
 
-def test_formula_only_requires_an_explicit_formula(ethanol_sample) -> None:
-    """The prior-only control cannot be constructed with an empty input."""
-    template = select_structure_prompt(0, input_mode="formula_only")
+def test_formula_ablation_removes_the_formula_line(ethanol_sample) -> None:
+    """The no-formula experiment should still include both NMR tables."""
+    with_formula = build_structure_prompt(ethanol_sample, include_formula=True)
+    without_formula = build_structure_prompt(ethanol_sample, include_formula=False)
 
-    with pytest.raises(ValueError, match="requires include_formula"):
-        build_structure_prompt(
-            ethanol_sample,
-            template,
-            include_formula=False,
-            input_mode="formula_only",
-        )
+    assert "Molecular formula:" in with_formula
+    assert "Molecular formula:" not in without_formula
+    assert "1H NMR:" in without_formula
+    assert "13C NMR:" in without_formula
 
 
 def test_structure_prompt_can_omit_formula_for_ablation(ethanol_sample) -> None:
     """Formula-free ablations should not leak formula from labels."""
     prompt = build_structure_prompt(
         ethanol_sample,
-        "Predict.\n\n{peak_tables}",
+        "Predict.\n\n{spectral_context}",
         include_formula=False,
     )
     assert "Molecular formula:" not in prompt
@@ -119,7 +87,7 @@ def test_structure_prompt_reads_formula_without_target_smiles(ethanol_sample) ->
 
     prompt = build_structure_prompt(
         sample,
-        "Predict.\n\n{peak_tables}",
+        "Predict.\n\n{spectral_context}",
         include_formula=True,
     )
 
@@ -131,20 +99,19 @@ def test_structure_prompt_never_derives_formula_from_target(ethanol_sample) -> N
     sample = dict(ethanol_sample)
     sample.pop("molecular_formula")
 
-    prompt = build_structure_prompt(
-        sample,
-        "Predict.\n\n{peak_tables}",
-        include_formula=True,
-    )
-
-    assert "Molecular formula:" not in prompt
+    with pytest.raises(ValueError, match="molecular_formula"):
+        build_structure_prompt(
+            sample,
+            "Predict.\n\n{spectral_context}",
+            include_formula=True,
+        )
 
 
 def test_structure_prompt_can_include_compact_rule_context(ethanol_sample) -> None:
     """Rule-context experiments should add bounded auditable evidence."""
     prompt = build_structure_prompt(
         ethanol_sample,
-        "Predict.\n\n{peak_tables}",
+        "Predict.\n\n{spectral_context}",
         include_formula=True,
         include_rule_context=True,
         max_rule_evidence=3,
@@ -160,7 +127,7 @@ def test_formula_free_rule_context_does_not_emit_dbe(ethanol_sample) -> None:
     """Formula-free rule evidence should remain useful without leaking DBE."""
     prompt = build_structure_prompt(
         ethanol_sample,
-        "Predict.\n\n{peak_tables}",
+        "Predict.\n\n{spectral_context}",
         include_formula=False,
         include_rule_context=True,
     )
@@ -191,6 +158,33 @@ def test_structure_evaluation_extracts_smiles_from_markdown_fence() -> None:
     assert row["predicted_smiles"] == "CCO"
     assert row["valid_smiles"] is True
     assert row["exact_match"] is True
+
+
+def test_structure_evaluation_extracts_smiles_from_json_object() -> None:
+    """Current model outputs should be parsed from the required JSON object."""
+    row = evaluate_structure_prediction('{"smiles":"CCO"}', "CCO")
+
+    assert row["predicted_smiles"] == "CCO"
+    assert row["valid_smiles"] is True
+    assert row["exact_match"] is True
+    assert row["output_format_compliant"] is True
+
+
+def test_function_calling_style_arguments_extract_smiles() -> None:
+    """Inference parsing should support function-call argument payloads."""
+    response = '{"name":"return_structure","arguments":{"smiles":"OCC"}}'
+
+    assert extract_final_smiles(response) == "OCC"
+    assert evaluate_structure_prediction(response, "CCO")["predicted_smiles"] == "CCO"
+
+
+def test_json_null_smiles_is_compliant_but_not_valid_structure() -> None:
+    """The required schema permits null when the input is insufficient."""
+    row = evaluate_structure_prediction('{"smiles":null}', "CCO")
+
+    assert row["predicted_smiles"] is None
+    assert row["valid_smiles"] is False
+    assert row["output_format_compliant"] is True
 
 
 def test_structure_evaluation_reports_formula_and_connectivity_matches() -> None:
@@ -241,7 +235,7 @@ def test_structure_summary_reports_direct_prediction_metrics() -> None:
     assert callable(evaluate_structure)
     assert callable(summarize_structure)
     rows = [
-        evaluate_structure("CCO", "CCO"),
+        evaluate_structure('{"smiles":"CCO"}', "CCO"),
         evaluate_structure("not_a_smiles", "CCN"),
     ]
     summary = summarize_structure(rows)
@@ -292,7 +286,7 @@ def test_structure_summary_upgrades_legacy_prediction_rows() -> None:
     assert summary["domain_valid_smiles_rate"] == 1.0
     assert summary["mean_tanimoto"] == 1.0
     assert summary["reference_ring_scaffold_coverage"] == 0.0
-    assert summary["output_format_compliance_rate"] == 1.0
+    assert summary["output_format_compliance_rate"] == 0.0
 
 
 def test_domain_validity_enforces_the_dataset_molecule_policy() -> None:
@@ -411,12 +405,19 @@ def test_functional_group_spectral_support_uses_soft_1d_signatures(
 
 def test_output_behavior_states_are_disjoint() -> None:
     """Formatting, illegal structures, and non-SMILES text need distinct rates."""
-    compliant = classify_output_behavior("CCO")
-    illegal = classify_output_behavior("not_a_smiles")
+    compliant = classify_output_behavior('{"smiles":"CCO"}')
+    null_output = classify_output_behavior('{"smiles":null}')
+    illegal = classify_output_behavior('{"smiles":"not_a_smiles"}')
+    bare = classify_output_behavior("CCO")
     prose = classify_output_behavior("Final SMILES: CCO")
     fenced = classify_output_behavior("```smiles\nCCO\n```")
 
     assert compliant == {
+        "output_format_compliant": True,
+        "rdkit_invalid_bare_output": False,
+        "non_bare_output": False,
+    }
+    assert null_output == {
         "output_format_compliant": True,
         "rdkit_invalid_bare_output": False,
         "non_bare_output": False,
@@ -426,9 +427,10 @@ def test_output_behavior_states_are_disjoint() -> None:
         "rdkit_invalid_bare_output": True,
         "non_bare_output": False,
     }
+    assert bare["non_bare_output"] is True
     assert prose["non_bare_output"] is True
     assert fenced["non_bare_output"] is True
-    for result in (compliant, illegal, prose, fenced):
+    for result in (compliant, null_output, illegal, bare, prose, fenced):
         assert sum(bool(value) for value in result.values()) == 1
 
 

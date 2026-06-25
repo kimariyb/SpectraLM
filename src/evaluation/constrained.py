@@ -12,6 +12,7 @@ from src.data.molecules import (
     inspect_dataset_molecule,
     molecule_formula,
 )
+from src.evaluation.metrics import extract_final_smiles
 
 
 @dataclass(frozen=True)
@@ -55,7 +56,8 @@ def filter_generated_candidates(
     domain_valid: list[str] = []
     seen: set[str] = set()
     for candidate in raw:
-        inspection = inspect_dataset_molecule(candidate)
+        extracted = extract_final_smiles(candidate)
+        inspection = inspect_dataset_molecule(extracted)
         if not inspection.accepted or inspection.isotope_label_count:
             continue
         connectivity = canonicalize_connectivity_smiles(
@@ -91,7 +93,9 @@ def resolve_ranked_candidate(
     """Resolve a ranker response without permitting out-of-set structures."""
     if not candidates:
         return RankedSelection(prediction="", ranking_failed=True)
-    ranked = canonicalize_connectivity_smiles(ranking_response)
+    ranked = canonicalize_connectivity_smiles(
+        extract_final_smiles(ranking_response)
+    )
     if ranked in candidates:
         return RankedSelection(prediction=ranked, ranking_failed=False)
     return RankedSelection(prediction=candidates[0], ranking_failed=True)

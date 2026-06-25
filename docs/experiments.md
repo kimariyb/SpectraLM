@@ -1,113 +1,95 @@
-# SpectraLM Two-Stage 10k Experiment
+# SpectraLM Text-Only 10k Experiment
 
-This is the only active experiment protocol. The 10k development cohort contains
-9,000 training samples and 1,000 validation samples. A separate scaffold-disjoint
-test split contains 1,000 samples (10%) and is not counted in the 10k cohort.
+This is the only active experiment protocol. The 10k cohort contains 8,000
+training samples, 1,000 validation samples, and 1,000 test samples.
 
 ## Fixed Protocol
 
-- Base model: `/mnt/data/kimariyb/models/Qwen3.5-9B`
-- Spectrum images: pre-rendered `512 x 288` paired 1H/13C images
-- Formula: supplied in every active training modality and at inference
+- Base model: `/mnt/data/kimariyb/models/Qwen3-8B`
+- Input: serialized `1H` and `13C` NMR peak tables
+- Formula setting: formula-conditioned and no-formula experiments are trained
+  separately
 - Target: canonical connectivity SMILES without stereochemistry
 - Molecule domain: one neutral, non-radical, isotope-free component containing
   only H, C, N, O, F, Si, P, S, Cl, Br, or I
-- Training modalities: full 0.50, image-only 0.25, peak-table-only 0.25
-- Validation modality: full input only
-
-Stage 1 runs one epoch with four tasks: direct structure prediction 0.40,
-candidate ranking 0.30, functional-group recognition 0.20, and spectral-region
-classification 0.10. Stage 2 continues the same trainable adapter for two epochs
-using direct structure prediction only.
+- System prompt: non-thinking structure elucidation, no reasoning output
+- Output schema: `{"smiles":"string (canonical SMILES, or null if insufficient data)"}`
+- Supervision: response-only labels; prompt, peak tables, formula, and rules
+  are context and do not contribute to the loss
 
 ## Data Preparation
 
-Activate the required environment before every command:
-
 ```bash
 conda activate ml
-```
 
-If the paired JSONL mother dataset does not yet exist, build it once:
-
-```bash
 bash script/build_full_jsonl.sh \
   dataset/NMRexp_10to24_1_1004.csv \
   dataset/paired_jsonl_full
-```
 
-Create or refresh the exact 9k/1k/5k split and formula-matched hard-negative
-sidecars:
-
-```bash
 bash script/run_experiment.sh prepare split-10k
-bash script/run_experiment.sh prepare candidates-10k-train
-bash script/run_experiment.sh prepare candidates-10k-val
+bash script/run_experiment.sh prepare candidates-formula-10k-train
+bash script/run_experiment.sh prepare candidates-formula-10k-val
 ```
 
-Pre-render images when the `512x288` cache is absent or incomplete:
-
-```bash
-python script/pre_render_jsonl_images.py dataset/paired_jsonl_full \
-  --splits clean_10k_train clean_10k_val clean_10k_test \
-  --image-size 512 288 \
-  --num-workers 32
-```
-
-Before training, verify that the split files contain 9,000, 1,000, and 1,000
-IDs and inspect `candidate_coverage` printed by each sidecar command. Samples
-without a same-formula negative fall back to direct structure supervision for
-that draw rather than aborting training.
+After `prepare split-10k`, verify that the generated split files contain
+8,000 train IDs, 1,000 validation IDs, and 1,000 test IDs.
 
 ## Training
 
-Run smoke first, then the two stages sequentially on one 48GB CUDA GPU:
+Run smoke first:
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 bash script/run_experiment.sh train smoke
-CUDA_VISIBLE_DEVICES=0 bash script/run_experiment.sh train stage1-10k
-CUDA_VISIBLE_DEVICES=0 bash script/run_experiment.sh train stage2-10k
 ```
 
-Do not start Stage 2 until this file exists:
+Formula-conditioned path:
 
-```text
-outputs/experiments/multitask/stage1-10k-seed3407/best_model/adapter_config.json
+```bash
+CUDA_VISIBLE_DEVICES=0 bash script/run_experiment.sh train stage1-formula-10k
+CUDA_VISIBLE_DEVICES=0 bash script/run_experiment.sh train stage2-formula-10k
 ```
 
-Stage 2 loads that adapter with `is_trainable=True`; it does not initialize a
-new LoRA adapter. All training uses response-only supervision, so prompt text,
-peak tables, and images are context while only assistant targets contribute to
-the language-model loss.
+No-formula ablation:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 bash script/run_experiment.sh train stage1-no-formula-10k
+CUDA_VISIBLE_DEVICES=0 bash script/run_experiment.sh train stage2-no-formula-10k
+```
+
+Stage 1 uses direct structure prediction, candidate ranking, functional-group
+recognition, and spectral-region classification. Stage 2 continues the Stage 1
+adapter with direct structure prediction only.
 
 ## Inference
 
-Run direct greedy decoding first, followed by constrained inference:
+Formula-conditioned evaluation:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 bash script/run_experiment.sh infer stage2-10k
-CUDA_VISIBLE_DEVICES=0 bash script/run_experiment.sh infer constrained-10k
+CUDA_VISIBLE_DEVICES=0 bash script/run_experiment.sh infer direct-formula-10k
+CUDA_VISIBLE_DEVICES=0 bash script/run_experiment.sh infer candidates-formula-10k
 ```
 
-Constrained inference samples 32 structures at temperature 0.7 and top-p 0.9,
-rejects invalid or out-of-domain structures, applies an exact molecular-formula
-constraint, and asks the final model to rank the survivors. If no generated
-candidate satisfies the supplied formula, the prediction is deliberately empty.
-This is recorded as a hard-constraint failure and remains in every metric
-denominator; it is not treated as a missing sample.
+No-formula evaluation:
 
-Primary reporting uses connectivity exact match because one-dimensional spectra
-do not generally identify stereochemistry. Report stereo exact match separately,
-along with validity, molecular-formula accuracy, Tanimoto similarity, scaffold
-match, functional-group F1, output behavior, candidate oracle@32, constraint
-coverage/failure, and ranking failure.
+```bash
+CUDA_VISIBLE_DEVICES=0 bash script/run_experiment.sh infer direct-no-formula-10k
+CUDA_VISIBLE_DEVICES=0 bash script/run_experiment.sh infer candidates-no-formula-10k
+```
+
+Candidate inference samples 32 structures at temperature 0.7 and top-p 0.9. In
+formula-conditioned runs, invalid, out-of-domain, and formula-mismatched
+candidates are rejected before rule pre-ranking and model-based candidate
+selection. In no-formula runs, formula filtering is skipped but domain validity
+and rule/model ranking remain active.
 
 ## Outputs
 
-- Stage 1: `outputs/experiments/multitask/stage1-10k-seed3407/`
-- Stage 2: `outputs/experiments/structure/stage2-10k-seed3407/`
-- Direct predictions: `outputs/experiments/structure/predictions/stage2-10k-direct.jsonl`
-- Constrained predictions: `outputs/experiments/structure/predictions/stage2-10k-constrained.jsonl`
+- Multitask adapters: `outputs/experiments/multitask/`
+- Structure adapters: `outputs/experiments/structure/`
+- Predictions: `outputs/experiments/structure/predictions/`
 
-Each prediction JSONL has a sibling `.summary.json`. Preserve configs, split ID
-files, sidecars, training summaries, and prediction files for manuscript tables.
+Primary reporting uses connectivity exact match. Also report exact match, valid
+SMILES rate, molecular-formula accuracy, Tanimoto similarity, scaffold match,
+functional-group F1, functional-group spectral support, output-format
+compliance, invalid-structure rate, non-SMILES output rate, candidate oracle@32,
+constraint failure, and ranking failure.

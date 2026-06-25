@@ -1,4 +1,4 @@
-"""Contract tests for the single supported two-stage 10k experiment."""
+"""Contract tests for the supported text-only 10k experiment."""
 
 from __future__ import annotations
 
@@ -13,10 +13,26 @@ ROOT = Path(__file__).parents[1]
 CONFIG_DIR = ROOT / "configs"
 ACTIVE_CONFIGS = {
     "train_smoke.yaml",
-    "experiments/train_stage1_10k.yaml",
-    "experiments/train_stage2_10k.yaml",
-    "experiments/infer_stage2_10k.yaml",
-    "experiments/infer_constrained_10k.yaml",
+    "experiments/train_stage1_formula_10k.yaml",
+    "experiments/train_stage2_formula_10k.yaml",
+    "experiments/train_stage1_no_formula_10k.yaml",
+    "experiments/train_stage2_no_formula_10k.yaml",
+    "experiments/infer_direct_formula_10k.yaml",
+    "experiments/infer_candidates_formula_10k.yaml",
+    "experiments/infer_direct_no_formula_10k.yaml",
+    "experiments/infer_candidates_no_formula_10k.yaml",
+}
+LEGACY_VISUAL_KEYS = {
+    "image_backend",
+    "rendered_image_dir",
+    "missing_image_policy",
+    "image_size",
+    "h_snr",
+    "c_snr",
+    "render_seed",
+    "input_mode",
+    "input_mode_weights",
+    "eval_input_mode_weights",
 }
 
 
@@ -49,77 +65,93 @@ def test_only_current_experiment_configs_remain() -> None:
     assert retained == ACTIVE_CONFIGS
 
 
-def test_two_stage_10k_configs_share_the_approved_protocol() -> None:
-    stage1 = _read_yaml("experiments/train_stage1_10k.yaml")
-    stage2 = _read_yaml("experiments/train_stage2_10k.yaml")
-    assert stage1["train_split_name"] == stage2["train_split_name"] == "clean_10k_train"
-    assert stage1["eval_split_name"] == stage2["eval_split_name"] == "clean_10k_val"
-    assert stage1["max_eval_samples"] == stage2["max_eval_samples"] == 1000
-    expected_modes = {
-        "full": 0.50,
-        "image_only": 0.25,
-        "peak_table_only": 0.25,
-    }
-    assert stage1["input_mode_weights"] == expected_modes
-    assert stage2["input_mode_weights"] == expected_modes
-    assert stage1["eval_input_mode_weights"] == {"full": 1.0}
-    assert stage2["eval_input_mode_weights"] == {"full": 1.0}
-    assert stage1["task_weights"] == {
-        "structure_prediction": 0.40,
-        "functional_group_recognition": 0.20,
-        "candidate_ranking": 0.30,
-        "spectral_region_classification": 0.10,
-    }
-    assert stage2["task_weights"] == {"structure_prediction": 1.0}
-    assert stage2["initial_adapter_path"] == f"{stage1['output_dir']}/best_model"
-    assert stage1["target_stereochemistry"] == "remove"
-    assert stage2["target_stereochemistry"] == "remove"
-    assert stage1["num_train_epochs"] == 1
-    assert stage2["num_train_epochs"] == 2
-    assert stage1["learning_rate"] == 1.0e-4
-    assert stage2["learning_rate"] == 5.0e-5
-
-
-def test_training_configs_have_matched_cuda_and_early_stopping_controls() -> None:
-    for name in (
-        "train_smoke.yaml",
-        "experiments/train_stage1_10k.yaml",
-        "experiments/train_stage2_10k.yaml",
-    ):
+def test_training_configs_share_text_model_and_no_visual_keys() -> None:
+    for name in ACTIVE_CONFIGS:
         config = _read_yaml(name)
-        assert config["model_path"] == "/mnt/data/kimariyb/models/Qwen3.5-9B"
-        assert config["image_size"] == [512, 288]
+        assert config["model_path"] == "/mnt/data/kimariyb/models/Qwen3-8B"
+        assert not (set(config) & LEGACY_VISUAL_KEYS)
+
+
+def test_formula_and_no_formula_stages_are_separate() -> None:
+    formula_stage1 = _read_yaml("experiments/train_stage1_formula_10k.yaml")
+    formula_stage2 = _read_yaml("experiments/train_stage2_formula_10k.yaml")
+    no_formula_stage1 = _read_yaml("experiments/train_stage1_no_formula_10k.yaml")
+    no_formula_stage2 = _read_yaml("experiments/train_stage2_no_formula_10k.yaml")
+
+    for config in (
+        formula_stage1,
+        formula_stage2,
+        no_formula_stage1,
+        no_formula_stage2,
+    ):
+        assert config["train_split_name"] == "clean_10k_train"
+        assert config["eval_split_name"] == "clean_10k_val"
+        assert config["max_eval_samples"] == 1000
+        assert config["target_stereochemistry"] == "remove"
+        assert config["rule_context_enabled"] is False
         assert config["eval_accumulation_steps"] > 0
         assert config["early_stopping_patience"] > 0
         assert config["early_stopping_threshold"] >= 0
-        assert config["per_device_eval_batch_size"] <= 16
-        assert config["include_formula"] is True
-        assert config["rule_context_enabled"] is False
+
+    assert formula_stage1["include_formula"] is True
+    assert formula_stage2["include_formula"] is True
+    assert no_formula_stage1["include_formula"] is False
+    assert no_formula_stage2["include_formula"] is False
+    assert formula_stage2["initial_adapter_path"] == (
+        f"{formula_stage1['output_dir']}/best_model"
+    )
+    assert no_formula_stage2["initial_adapter_path"] == (
+        f"{no_formula_stage1['output_dir']}/best_model"
+    )
+    assert formula_stage1["task_weights"]["candidate_ranking"] == 0.30
+    assert formula_stage2["task_weights"] == {"structure_prediction": 1.0}
 
 
-def test_inference_configs_use_stage2_and_shared_test() -> None:
-    stage2 = _read_yaml("experiments/train_stage2_10k.yaml")
-    for name in (
-        "experiments/infer_stage2_10k.yaml",
-        "experiments/infer_constrained_10k.yaml",
-    ):
-        config = _read_yaml(name)
+def test_inference_configs_match_stage2_adapters_and_shared_test() -> None:
+    pairs = [
+        (
+            "experiments/train_stage2_formula_10k.yaml",
+            "experiments/infer_direct_formula_10k.yaml",
+            True,
+        ),
+        (
+            "experiments/train_stage2_formula_10k.yaml",
+            "experiments/infer_candidates_formula_10k.yaml",
+            True,
+        ),
+        (
+            "experiments/train_stage2_no_formula_10k.yaml",
+            "experiments/infer_direct_no_formula_10k.yaml",
+            False,
+        ),
+        (
+            "experiments/train_stage2_no_formula_10k.yaml",
+            "experiments/infer_candidates_no_formula_10k.yaml",
+            False,
+        ),
+    ]
+    for train_name, infer_name, include_formula in pairs:
+        stage2 = _read_yaml(train_name)
+        config = _read_yaml(infer_name)
         assert config["adapter_path"] == f"{stage2['output_dir']}/best_model"
         assert config["split"] == "clean_10k_test"
         assert config["max_samples"] == 1000
-        assert config["input_mode"] == "full"
-        assert config["include_formula"] is True
+        assert config["include_formula"] is include_formula
 
 
-def test_constrained_inference_uses_approved_sampling() -> None:
-    config = _read_yaml("experiments/infer_constrained_10k.yaml")
-    assert config["num_candidates"] == 32
-    assert config["candidate_temperature"] == 0.7
-    assert config["candidate_top_p"] == 0.9
-    assert config["ranking_temperature"] == 0.0
-    assert config["output"].startswith(
-        "outputs/experiments/structure/predictions/"
-    )
+def test_candidate_inference_uses_approved_sampling() -> None:
+    for name in (
+        "experiments/infer_candidates_formula_10k.yaml",
+        "experiments/infer_candidates_no_formula_10k.yaml",
+    ):
+        config = _read_yaml(name)
+        assert config["num_candidates"] == 32
+        assert config["candidate_temperature"] == 0.7
+        assert config["candidate_top_p"] == 0.9
+        assert config["ranking_temperature"] == 0.0
+        assert config["output"].startswith(
+            "outputs/experiments/structure/predictions/"
+        )
 
 
 def test_experiment_runner_exposes_only_current_workflow() -> None:
@@ -131,12 +163,41 @@ def test_experiment_runner_exposes_only_current_workflow() -> None:
         text=True,
     )
     assert "prepare split-10k" in completed.stdout
-    assert "train stage1-10k" in completed.stdout
-    assert "train stage2-10k" in completed.stdout
-    assert "infer constrained-10k" in completed.stdout
+    assert "prepare candidates-formula-10k-train" in completed.stdout
+    assert "train stage1-formula-10k" in completed.stdout
+    assert "train stage2-no-formula-10k" in completed.stdout
+    assert "infer candidates-formula-10k" in completed.stdout
+    assert "image-only" not in completed.stdout
     assert "formula-only" not in completed.stdout
     subprocess.run(
         ["bash", "-n", "script/run_experiment.sh"],
         cwd=ROOT,
         check=True,
     )
+
+
+def test_active_code_and_docs_have_no_legacy_visual_workflow_terms() -> None:
+    paths = [
+        ROOT / "src",
+        ROOT / "script",
+        ROOT / "configs",
+        ROOT / "README.md",
+        ROOT / "docs" / "experiments.md",
+        ROOT / "docs" / "research_design.md",
+    ]
+    needles = [
+        "FastVisionModel",
+        "UnslothVisionDataCollator",
+        "load_sample_images",
+        "image_backend",
+        "rendered_image_dir",
+        "input_mode_weights",
+    ]
+    for path in paths:
+        files = path.rglob("*.py") if path.is_dir() else [path]
+        for file_path in files:
+            if file_path == ROOT / "src" / "training" / "arguments.py":
+                continue
+            text = file_path.read_text(encoding="utf-8")
+            for needle in needles:
+                assert needle not in text, f"{needle} remains in {file_path}"

@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 
-class FakeFastVisionModel:
+class FakeFastLanguageModel:
     def __init__(self) -> None:
         self.calls: list[tuple[object, dict]] = []
         self.result = object()
@@ -42,7 +42,7 @@ def test_setup_lora_loads_initial_adapter_as_trainable(tmp_path: Path) -> None:
     result = _setup_lora_model()(
         model,
         {"initial_adapter_path": str(adapter)},
-        fast_vision_model=FakeFastVisionModel(),
+        fast_language_model=FakeFastLanguageModel(),
         peft_model_class=FakePeftModel,
     )
 
@@ -57,13 +57,13 @@ def test_setup_lora_fails_when_initial_adapter_is_missing(
         _setup_lora_model()(
             object(),
             {"initial_adapter_path": str(tmp_path / "missing")},
-            fast_vision_model=FakeFastVisionModel(),
+            fast_language_model=FakeFastLanguageModel(),
             peft_model_class=FakePeftModel,
         )
 
 
 def test_setup_lora_creates_new_adapter_without_initial_path() -> None:
-    fast_model = FakeFastVisionModel()
+    fast_model = FakeFastLanguageModel()
     model = object()
 
     result = _setup_lora_model()(
@@ -74,7 +74,7 @@ def test_setup_lora_creates_new_adapter_without_initial_path() -> None:
             "lora_dropout": 0.0,
             "seed": 42,
         },
-        fast_vision_model=fast_model,
+        fast_language_model=fast_model,
         peft_model_class=FakePeftModel,
     )
 
@@ -83,3 +83,13 @@ def test_setup_lora_creates_new_adapter_without_initial_path() -> None:
     assert fast_model.calls[0][1]["r"] == 8
     assert fast_model.calls[0][1]["lora_alpha"] == 16
     assert fast_model.calls[0][1]["random_state"] == 42
+    assert fast_model.calls[0][1]["target_modules"] == [
+        "q_proj",
+        "k_proj",
+        "v_proj",
+        "o_proj",
+        "gate_proj",
+        "up_proj",
+        "down_proj",
+    ]
+    assert "finetune_vision_layers" not in fast_model.calls[0][1]

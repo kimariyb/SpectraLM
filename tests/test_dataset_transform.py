@@ -1,25 +1,17 @@
-"""Tests for dataset splitting and message transforms."""
+"""Tests for text-only lazy JSONL datasets and message transforms."""
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
 
-from PIL import Image as PILImage
-import pytest
-
-import src.data.dataset as dataset_module
-from src.data.modalities import (
-    normalize_input_mode_weights,
-    select_weighted_input_mode,
-)
 from src.data.dataset import (
     LazyNMRJsonlDataset,
     NMRMessageTransform,
-    _resize_image,
     load_lazy_nmr_dataset,
     load_raw_nmr_samples,
 )
+from src.evaluation.prompts import SYSTEM_PROMPT
 
 
 def _write_lazy_jsonl_fixture(
@@ -39,54 +31,6 @@ def _write_lazy_jsonl_fixture(
         sample_id + "\n",
         encoding="utf-8",
     )
-
-
-def test_resize_image_skips_resize_when_dimensions_match(monkeypatch) -> None:
-    """Already-sized pre-rendered images should not be resampled."""
-    image = PILImage.new("RGB", (32, 18), color=(255, 255, 255))
-    original_resize = PILImage.Image.resize
-    resize_calls: list[tuple[int, int]] = []
-
-    def tracking_resize(self, size, *args, **kwargs):
-        resize_calls.append(tuple(size))
-        return original_resize(self, size, *args, **kwargs)
-
-    monkeypatch.setattr(PILImage.Image, "resize", tracking_resize)
-
-    result = _resize_image(image, (32, 18))
-
-    assert result.size == (32, 18)
-    assert resize_calls == []
-
-
-def test_modality_weights_normalize_to_approved_three_modes() -> None:
-    """The current curriculum should expose only three evidence mixtures."""
-    assert normalize_input_mode_weights(
-        {"full": 0.5, "image_only": 0.25, "peak_table_only": 0.25}
-    ) == {"full": 0.5, "image_only": 0.25, "peak_table_only": 0.25}
-
-
-def test_modality_selection_is_stable_per_sample() -> None:
-    """Worker scheduling must not alter one sample's assigned modality."""
-    weights = {"full": 0.5, "image_only": 0.25, "peak_table_only": 0.25}
-    first = select_weighted_input_mode(
-        "sample-17",
-        seed=3407,
-        weights=weights,
-    )
-    second = select_weighted_input_mode(
-        "sample-17",
-        seed=3407,
-        weights=weights,
-    )
-    assert first == second
-    assert first in weights
-
-
-def test_formula_only_is_rejected_from_training_mixture() -> None:
-    """Formula-only remains an ablation, not a curriculum mode."""
-    with pytest.raises(ValueError, match="formula_only"):
-        normalize_input_mode_weights({"full": 0.5, "formula_only": 0.5})
 
 
 def test_lazy_dataset_reuses_cached_offsets(
@@ -171,86 +115,38 @@ def test_lazy_dataset_pickle_state_drops_jsonl_handle(
     dataset.close()
 
 
+def test_message_transform_emits_system_user_assistant_text(ethanol_sample) -> None:
+    """Training examples should be pure text chat messages."""
+    transform = NMRMessageTransform(seed=1, prompt_template_index=0)
+    output = transform({"sample": [ethanol_sample]})
+
+    messages = output["messages"][0]
+    assert [message["role"] for message in messages] == [
+        "system",
+        "user",
+        "assistant",
+    ]
+    assert messages[0]["content"] == SYSTEM_PROMPT
+    assert "1H NMR:" in messages[1]["content"]
+    assert "13C NMR:" in messages[1]["content"]
+    assert "Molecular formula: C2H6O" in messages[1]["content"]
+    assert json.loads(messages[2]["content"]) == {"smiles": "CCO"}
+
+
 def test_message_transform_can_omit_formula(ethanol_sample) -> None:
     """Formula-free training should not leak formula through prompts."""
     transform = NMRMessageTransform(
         seed=1,
         include_formula=False,
+        prompt_template_index=0,
     )
-    batch = {
-        "h_image": [None],
-        "c_image": [None],
-        "sample": [ethanol_sample],
-    }
 
-    output = transform(batch)
-    prompt = output["messages"][0][0]["content"][2]["text"]
+    output = transform({"sample": [ethanol_sample]})
+    prompt = output["messages"][0][1]["content"]
 
     assert "Molecular formula:" not in prompt
-
-
-@pytest.mark.parametrize(
-    ("input_mode", "content_types"),
-    [
-        ("full", ["image", "image", "text"]),
-        ("image_only", ["image", "image", "text"]),
-        ("peak_table_only", ["text"]),
-        ("formula_only", ["text"]),
-    ],
-)
-def test_message_transform_emits_only_selected_modalities(
-    ethanol_sample,
-    input_mode: str,
-    content_types: list[str],
-) -> None:
-    """Training messages should physically omit ablated image inputs."""
-    transform = NMRMessageTransform(
-        seed=1,
-        input_mode=input_mode,
-        prompt_template_index=0,
-    )
-    output = transform(
-        {
-            "h_image": [PILImage.new("RGB", (32, 18))],
-            "c_image": [PILImage.new("RGB", (32, 18))],
-            "sample": [ethanol_sample],
-        }
-    )
-
-    content = output["messages"][0][0]["content"]
-    assert [item["type"] for item in content] == content_types
-    prompt = content[-1]["text"]
-    assert ("## 1H NMR Peak Table" in prompt) is (
-        input_mode in {"full", "peak_table_only"}
-    )
-
-
-def test_message_transform_uses_weighted_peak_only_mode(ethanol_sample) -> None:
-    """A weighted curriculum row should physically omit image inputs."""
-    transform = NMRMessageTransform(
-        seed=1,
-        input_mode_weights={"peak_table_only": 1.0},
-        prompt_template_index=0,
-    )
-    output = transform(
-        {
-            "h_image": [PILImage.new("RGB", (32, 18))],
-            "c_image": [PILImage.new("RGB", (32, 18))],
-            "sample": [ethanol_sample],
-        }
-    )
-    content = output["messages"][0][0]["content"]
-    assert [item["type"] for item in content] == ["text"]
-    assert "## 1H NMR Peak Table" in content[0]["text"]
-
-
-def test_non_full_modality_supports_auxiliary_task_mixture() -> None:
-    """Mode-aware prompts should permit auxiliary image-only supervision."""
-    transform = NMRMessageTransform(
-        input_mode="image_only",
-        task_weights={"functional_group_recognition": 1.0},
-    )
-    assert transform.task_names == ("functional_group_recognition",)
+    assert "1H NMR:" in prompt
+    assert "13C NMR:" in prompt
 
 
 def test_message_transform_can_add_formula_free_rule_context(ethanol_sample) -> None:
@@ -260,15 +156,11 @@ def test_message_transform_can_add_formula_free_rule_context(ethanol_sample) -> 
         include_formula=False,
         include_rule_context=True,
         max_rule_evidence=4,
+        prompt_template_index=0,
     )
-    batch = {
-        "h_image": [None],
-        "c_image": [None],
-        "sample": [ethanol_sample],
-    }
 
-    output = transform(batch)
-    prompt = output["messages"][0][0]["content"][2]["text"]
+    output = transform({"sample": [ethanol_sample]})
+    prompt = output["messages"][0][1]["content"]
 
     assert "## Derived 1D NMR Constraints" in prompt
     assert "ethyl fragment" in prompt
@@ -277,22 +169,17 @@ def test_message_transform_can_add_formula_free_rule_context(ethanol_sample) -> 
 
 
 def test_message_transform_can_force_functional_group_task(ethanol_sample) -> None:
-    """Task weights should select auxiliary supervision without changing images."""
+    """Task weights should select auxiliary supervision."""
     transform = NMRMessageTransform(
         seed=1,
         task_weights={"functional_group_recognition": 1.0},
+        prompt_template_index=0,
     )
-    output = transform(
-        {
-            "h_image": [None],
-            "c_image": [None],
-            "sample": [ethanol_sample],
-        }
-    )
+    output = transform({"sample": [ethanol_sample]})
 
     messages = output["messages"][0]
-    assert "functional group" in messages[0]["content"][2]["text"].lower()
-    assert messages[1]["content"][0]["text"] == '["alcohol"]'
+    assert "functional group" in messages[1]["content"].lower()
+    assert messages[2]["content"] == '["alcohol"]'
 
 
 def test_message_transform_falls_back_when_candidates_are_missing(
@@ -303,18 +190,13 @@ def test_message_transform_falls_back_when_candidates_are_missing(
         seed=1,
         task_weights={"candidate_ranking": 1.0},
         candidate_map={},
+        prompt_template_index=0,
     )
-    output = transform(
-        {
-            "h_image": [None],
-            "c_image": [None],
-            "sample": [ethanol_sample],
-        }
-    )
+    output = transform({"sample": [ethanol_sample]})
 
     messages = output["messages"][0]
-    assert "canonical SMILES" in messages[0]["content"][2]["text"]
-    assert messages[1]["content"][0]["text"] == "CCO"
+    assert '"smiles"' in messages[1]["content"]
+    assert json.loads(messages[2]["content"]) == {"smiles": "CCO"}
 
 
 def test_resolve_jsonl_samples_with_split_ids(tmp_path: Path, ethanol_sample) -> None:
@@ -353,60 +235,34 @@ def test_resolve_jsonl_samples_with_nested_subset_ids(tmp_path: Path, ethanol_sa
     )
     subsets_dir = tmp_path / "subsets"
     subsets_dir.mkdir()
-    (subsets_dir / "clean_50k_train_ids.txt").write_text(
+    (subsets_dir / "clean_10k_train_ids.txt").write_text(
         "sample-1\nsample-2\n",
         encoding="utf-8",
     )
 
-    train = load_raw_nmr_samples(tmp_path, split="clean_50k_train")
+    train = load_raw_nmr_samples(tmp_path, split="clean_10k_train")
 
     assert [sample["id"] for sample in train] == ["sample-1", "sample-2"]
 
 
 def test_load_lazy_nmr_dataset_from_jsonl_directory(tmp_path: Path, ethanol_sample) -> None:
-    """Lazy JSONL dataset should render images only when indexed."""
-    sample = dict(ethanol_sample)
-    sample["id"] = "sample-0"
-    (tmp_path / "samples.jsonl").write_text(
-        json.dumps(sample) + "\n",
-        encoding="utf-8",
-    )
-    (tmp_path / "train_ids.txt").write_text("sample-0\n", encoding="utf-8")
-
-    ds = load_lazy_nmr_dataset(
-        tmp_path,
-        split="train",
-        image_size=(64, 64),
-    )
-
-    row = ds[0]
-    assert len(ds) == 1
-    assert [message["role"] for message in row["messages"]] == ["user", "assistant"]
-    assert row["messages"][0]["content"][0]["image"].size == (64, 64)
-    assert row["messages"][1]["content"][0]["text"] == "CCO"
-
-
-def test_text_only_lazy_dataset_does_not_require_or_load_images(
-    tmp_path: Path,
-    ethanol_sample,
-) -> None:
-    """Peak-table ablation should work without a rendered-image directory."""
+    """Lazy JSONL dataset should return text-only chat rows."""
     _write_lazy_jsonl_fixture(tmp_path, ethanol_sample)
 
     dataset = load_lazy_nmr_dataset(
         tmp_path,
         split="train",
-        input_mode="peak_table_only",
         prompt_template_index=0,
-        image_backend="pre_rendered",
-        rendered_image_dir=None,
     )
-    row = dataset[0]
 
-    assert [
-        item["type"] for item in row["messages"][0]["content"]
-    ] == ["text"]
-    assert "## 1H NMR Peak Table" in row["messages"][0]["content"][0]["text"]
+    row = dataset[0]
+    assert len(dataset) == 1
+    assert [message["role"] for message in row["messages"]] == [
+        "system",
+        "user",
+        "assistant",
+    ]
+    assert json.loads(row["messages"][2]["content"]) == {"smiles": "CCO"}
 
 
 def test_lazy_dataset_loads_candidate_sidecar_for_ranking(
@@ -437,107 +293,13 @@ def test_lazy_dataset_loads_candidate_sidecar_for_ranking(
     dataset = load_lazy_nmr_dataset(
         tmp_path,
         split="train",
-        image_size=(32, 18),
         task_weights={"candidate_ranking": 1.0},
         candidate_sidecar_path=sidecar,
+        prompt_template_index=0,
     )
     row = dataset[0]
-    prompt = row["messages"][0]["content"][2]["text"]
+    prompt = row["messages"][1]["content"]
 
     assert "1. COC" in prompt
     assert "2. CCO" in prompt
-    assert row["messages"][1]["content"][0]["text"] == "CCO"
-
-
-def test_load_lazy_nmr_dataset_with_pre_rendered_images(
-    tmp_path: Path,
-    ethanol_sample,
-) -> None:
-    """Pre-rendered image backend should read PNGs instead of drawing spectra."""
-    sample = dict(ethanol_sample)
-    sample["id"] = "sample-0"
-    (tmp_path / "samples.jsonl").write_text(
-        json.dumps(sample) + "\n",
-        encoding="utf-8",
-    )
-    (tmp_path / "train_ids.txt").write_text("sample-0\n", encoding="utf-8")
-
-    rendered_dir = tmp_path / "rendered"
-    rendered_dir.mkdir()
-    PILImage.new("RGB", (32, 18), color=(255, 255, 255)).save(
-        rendered_dir / "sample-0_1h.png"
-    )
-    PILImage.new("RGB", (32, 18), color=(240, 240, 240)).save(
-        rendered_dir / "sample-0_13c.png"
-    )
-
-    ds = load_lazy_nmr_dataset(
-        tmp_path,
-        split="train",
-        image_size=(128, 72),
-        image_backend="pre_rendered",
-        rendered_image_dir=rendered_dir,
-    )
-
-    row = ds[0]
-
-    assert row["messages"][0]["content"][0]["image"].size == (128, 72)
-    assert row["messages"][0]["content"][1]["image"].size == (128, 72)
-    assert row["messages"][1]["content"][0]["text"] == "CCO"
-
-
-def test_load_sample_images_supports_pre_rendered_inference(
-    tmp_path: Path,
-    ethanol_sample,
-) -> None:
-    """Inference should reuse the same pre-rendered images as training."""
-    rendered_dir = tmp_path / "rendered"
-    rendered_dir.mkdir()
-    PILImage.new("RGB", (32, 18), color=(255, 255, 255)).save(
-        rendered_dir / "ethanol_1h.png"
-    )
-    PILImage.new("RGB", (32, 18), color=(240, 240, 240)).save(
-        rendered_dir / "ethanol_13c.png"
-    )
-    load_sample_images = getattr(dataset_module, "load_sample_images", None)
-
-    assert callable(load_sample_images)
-    images = load_sample_images(
-        ethanol_sample,
-        image_backend="pre_rendered",
-        rendered_image_dir=rendered_dir,
-        image_size=(32, 18),
-    )
-
-    assert [image.size for image in images] == [(32, 18), (32, 18)]
-
-
-def test_load_lazy_nmr_dataset_missing_pre_rendered_images_raises(
-    tmp_path: Path,
-    ethanol_sample,
-) -> None:
-    """Strict pre-rendered mode should fail fast when image files are absent."""
-    sample = dict(ethanol_sample)
-    sample["id"] = "sample-0"
-    (tmp_path / "samples.jsonl").write_text(
-        json.dumps(sample) + "\n",
-        encoding="utf-8",
-    )
-    (tmp_path / "train_ids.txt").write_text("sample-0\n", encoding="utf-8")
-    rendered_dir = tmp_path / "rendered"
-    rendered_dir.mkdir()
-
-    ds = load_lazy_nmr_dataset(
-        tmp_path,
-        split="train",
-        image_backend="pre_rendered",
-        rendered_image_dir=rendered_dir,
-        missing_image_policy="error",
-    )
-
-    try:
-        ds[0]
-    except FileNotFoundError as exc:
-        assert "Missing pre-rendered NMR image" in str(exc)
-    else:
-        raise AssertionError("Expected FileNotFoundError for missing PNGs")
+    assert json.loads(row["messages"][2]["content"]) == {"smiles": "CCO"}

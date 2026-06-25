@@ -22,17 +22,28 @@ def build_response_only_collator_kwargs() -> dict[str, Any]:
     }
 
 
-def build_vision_collator_kwargs(config: dict[str, Any]) -> dict[str, Any]:
-    """Build image-resize arguments for ``UnslothVisionDataCollator``."""
-    image_size = config.get("image_size")
-    if image_size is None:
-        return {}
-    if not isinstance(image_size, (list, tuple)) or len(image_size) != 2:
-        raise ValueError("image_size must contain exactly [width, height]")
-    width, height = (int(value) for value in image_size)
-    if width <= 0 or height <= 0:
-        raise ValueError("image_size dimensions must be positive")
-    return {"resize": (width, height)}
+LEGACY_VISUAL_CONFIG_KEYS = {
+    "image_backend",
+    "rendered_image_dir",
+    "missing_image_policy",
+    "image_size",
+    "h_snr",
+    "c_snr",
+    "render_seed",
+    "input_mode",
+    "input_mode_weights",
+    "eval_input_mode_weights",
+}
+
+
+def reject_legacy_visual_config(config: dict[str, Any]) -> None:
+    """Reject fields from the removed VLM/image workflow."""
+    present = sorted(key for key in LEGACY_VISUAL_CONFIG_KEYS if key in config)
+    if present:
+        raise ValueError(
+            "Legacy visual config keys are not supported in the text-only "
+            f"workflow: {', '.join(present)}"
+        )
 
 
 def training_log_dir(config: dict[str, Any]) -> Path:
@@ -67,6 +78,7 @@ def build_sft_kwargs(config: dict[str, Any]) -> dict[str, Any]:
     dict[str, Any]
         Keyword arguments accepted by ``SFTConfig``.
     """
+    reject_legacy_visual_config(config)
     num_workers = int(config.get("dataloader_num_workers", 0))
     if num_workers < 0:
         raise ValueError("dataloader_num_workers must be non-negative")

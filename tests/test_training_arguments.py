@@ -73,16 +73,19 @@ def test_build_sft_kwargs_omits_prefetch_for_single_process_loading() -> None:
     assert "dataloader_prefetch_factor" not in kwargs
 
 
-def test_build_vision_collator_kwargs_uses_configured_image_size() -> None:
-    """The configured render size should also control Unsloth collation."""
-    builder = getattr(
-        _training_arguments_module(),
-        "build_vision_collator_kwargs",
-        None,
-    )
+def test_visual_collator_builder_is_removed() -> None:
+    """The text workflow should not expose image collator settings."""
+    assert not hasattr(_training_arguments_module(), "build_vision_collator_kwargs")
 
-    assert callable(builder)
-    assert builder({"image_size": [768, 432]}) == {"resize": (768, 432)}
+
+def test_legacy_visual_config_is_rejected() -> None:
+    """Old VLM YAML fields should fail before model loading."""
+    reject = getattr(_training_arguments_module(), "reject_legacy_visual_config")
+
+    with pytest.raises(ValueError, match="image_backend"):
+        reject({"image_backend": "pre_rendered"})
+
+    reject({"include_formula": True})
 
 
 def test_response_only_collator_kwargs_match_qwen_chat_boundaries() -> None:

@@ -9,6 +9,7 @@ from script import curate_jsonl_subsets as curation
 
 build_subsets = curation.build_subsets
 filter_rows = curation.filter_rows
+assign_grouped_random_splits = curation.assign_grouped_random_splits
 
 
 def test_default_subset_size_matches_current_10k_study() -> None:
@@ -117,31 +118,31 @@ def test_build_subsets_writes_nested_scaling_id_files(tmp_path: Path) -> None:
     summary = build_subsets(
         rows,
         tmp_path,
-        subset_sizes=[2, 4],
-        val_size=2,
-        test_fraction=0.5,
+        subset_sizes=[4, 6],
+        val_size=1,
+        test_fraction=0.25,
         prefix="clean",
         seed=1,
     )
 
-    train_2 = (tmp_path / "clean_2_train_ids.txt").read_text(encoding="utf-8").splitlines()
     train_4 = (tmp_path / "clean_4_train_ids.txt").read_text(encoding="utf-8").splitlines()
-    val_2 = (tmp_path / "clean_2_val_ids.txt").read_text(encoding="utf-8").splitlines()
+    train_6 = (tmp_path / "clean_6_train_ids.txt").read_text(encoding="utf-8").splitlines()
+    val_4 = (tmp_path / "clean_4_val_ids.txt").read_text(encoding="utf-8").splitlines()
 
-    assert len(train_2) == 2
-    assert len(train_4) == 4
-    assert train_4[:2] == train_2
-    assert len(val_2) == 2
-    assert summary["subsets"]["clean_2"]["train"]["samples"] == 2
+    assert len(train_4) == 2
+    assert len(train_6) == 3
+    assert train_6[:2] == train_4
+    assert len(val_4) == 1
+    assert summary["subsets"]["clean_4"]["train"]["samples"] == 2
 
 
-def test_total_size_builds_exact_9k_1k_1k_protocol(
+def test_total_size_builds_exact_8k_1k_1k_protocol(
     tmp_path: Path,
 ) -> None:
     """A 10k cohort should use 10% validation and 10% test samples."""
     rows = [
         _manifest_row(f"train-{idx}", "train", f"train-{idx}")
-        for idx in range(9000)
+        for idx in range(8000)
     ]
     rows.extend(
         _manifest_row(f"val-{idx}", "val", f"val-{idx}")
@@ -162,10 +163,45 @@ def test_total_size_builds_exact_9k_1k_1k_protocol(
     )
 
     cohort = summary["subsets"]["clean_10k"]
-    assert cohort["train"]["samples"] == 9000
+    assert cohort["train"]["samples"] == 8000
     assert cohort["val"]["samples"] == 1000
     assert cohort["test"]["samples"] == 1000
-    assert cohort["requested_total_size"] == 10000
-    assert cohort["requested_train_size"] == 9000
-    assert cohort["requested_val_size"] == 1000
-    assert cohort["requested_test_size"] == 1000
+    assert sum(
+        cohort[f"requested_{key}_size"]
+        for key in ("train", "val", "test")
+    ) == 10000
+
+
+def test_grouped_random_splits_are_deterministic_and_keep_structures_together() -> None:
+    """Random controls should never leak one canonical structure across splits."""
+    rows = [
+        _manifest_row(
+            f"sample-{structure_idx}-{replicate_idx}",
+            "train",
+            f"scaffold-{structure_idx}",
+            canonical_smiles=f"C{structure_idx}O",
+        )
+        for structure_idx in range(10)
+        for replicate_idx in range(3)
+    ]
+
+    first = assign_grouped_random_splits(
+        rows,
+        seed=3407,
+        val_fraction=0.2,
+        test_fraction=0.2,
+    )
+    second = assign_grouped_random_splits(
+        rows,
+        seed=3407,
+        val_fraction=0.2,
+        test_fraction=0.2,
+    )
+
+    assert first == second
+    assert sum(len(split_rows) for split_rows in first.values()) == len(rows)
+    split_by_smiles = {}
+    for split, split_rows in first.items():
+        for row in split_rows:
+            split_by_smiles.setdefault(row["canonical_smiles"], set()).add(split)
+    assert all(len(splits) == 1 for splits in split_by_smiles.values())
