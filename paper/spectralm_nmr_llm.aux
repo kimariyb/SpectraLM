@@ -1,0 +1,121 @@
+\relax 
+\providecommand\hyper@newdestlabel[2]{}
+\providecommand*\HyPL@Entry[1]{}
+\citation{Ernst1987}
+\citation{Levitt2008}
+\citation{Silverstein2014}
+\citation{Claridge2016}
+\HyPL@Entry{0<</S/D>>}
+\@writefile{toc}{\contentsline {section}{\numberline {1}Introduction}{1}{section.1}\protected@file@percent }
+\citation{Huang2021}
+\citation{Hu2024}
+\citation{Sridharan2022}
+\citation{Devata2024}
+\citation{Yao2023}
+\citation{Alberts2023}
+\citation{Alberts2025}
+\citation{Xiong2025}
+\citation{Yang2025}
+\citation{Yang2026}
+\citation{Jin2026}
+\citation{Breitmaier2002}
+\citation{Pretsch2009}
+\citation{Claridge2016}
+\@writefile{toc}{\contentsline {section}{\numberline {2}Related Work}{2}{section.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.1}Machine learning for NMR-based structure elucidation}{2}{subsection.2.1}\protected@file@percent }
+\citation{Huang2021}
+\citation{Hu2024}
+\citation{Alberts2023}
+\citation{Alberts2025}
+\citation{Sridharan2022}
+\citation{Devata2024}
+\citation{Yao2023}
+\citation{Xiong2025}
+\citation{Yang2025}
+\citation{Yang2026}
+\citation{Jin2026}
+\@writefile{lof}{\contentsline {figure}{\numberline {1}{\ignorespaces \textbf  {Overview of the text-only \textsc  {SpectraLM}{} pipeline.} The model receives deterministic \(^{1}\)H/\(^{13}\)C peak tables and an optional molecular formula, then emits either a direct JSON \textsc  {smiles}{} prediction or sampled candidate structures. RDKit validation, formula/domain filtering, and one-dimensional NMR rules are applied outside the model. The central empirical question is where this hybrid pipeline fails: text learning, formula compliance, candidate recall, or reranking.}}{3}{figure.1}\protected@file@percent }
+\newlabel{fig:workflow}{{1}{3}{\textbf {Overview of the text-only \spectralm {} pipeline.} The model receives deterministic \(^{1}\)H/\(^{13}\)C peak tables and an optional molecular formula, then emits either a direct JSON \smiles {} prediction or sampled candidate structures. RDKit validation, formula/domain filtering, and one-dimensional NMR rules are applied outside the model. The central empirical question is where this hybrid pipeline fails: text learning, formula compliance, candidate recall, or reranking}{figure.1}{}}
+\citation{Vaswani2017}
+\citation{Paszke2019}
+\citation{Wolf2020}
+\citation{Mangrulkar2022}
+\citation{VonWerra2020}
+\citation{Hu2021LoRA}
+\citation{Dettmers2023QLoRA}
+\citation{QwenTeam2025}
+\citation{Weininger1988}
+\citation{RDKit}
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.2}Large language models and constrained molecular generation}{4}{subsection.2.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {3}Problem Formulation}{4}{section.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {4}Methods}{4}{section.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.1}Data curation}{4}{subsection.4.1}\protected@file@percent }
+\citation{Kingma2015}
+\citation{Loshchilov2019}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.2}Prompt representation}{5}{subsection.4.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.3}Training protocol}{5}{subsection.4.3}\protected@file@percent }
+\citation{Morgan1965}
+\citation{Rogers2010}
+\citation{Tanimoto1958}
+\citation{Bemis1996}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.4}Auxiliary tasks and rule evidence}{6}{subsection.4.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.5}Chemical post-processing}{6}{subsection.4.5}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.6}Inference modes}{6}{subsection.4.6}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.7}Evaluation}{6}{subsection.4.7}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {1}{\ignorespaces Training summary for the controlled 10k experiments. Runtime is measured from the project training logs.}}{7}{table.1}\protected@file@percent }
+\newlabel{tab:training}{{1}{7}{Training summary for the controlled 10k experiments. Runtime is measured from the project training logs}{table.1}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {2}{\ignorespaces Direct greedy inference on the 1,000-sample test split. Exact and connectivity exact are identical in these runs because targets are evaluated without stereochemistry.}}{7}{table.2}\protected@file@percent }
+\newlabel{tab:direct}{{2}{7}{Direct greedy inference on the 1,000-sample test split. Exact and connectivity exact are identical in these runs because targets are evaluated without stereochemistry}{table.2}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {5}Experiments and Results}{7}{section.5}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.1}Training dynamics}{7}{subsection.5.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.2}Direct generation}{7}{subsection.5.2}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {2}{\ignorespaces \textbf  {Training and test-set outcomes.} \textbf  {a}, Stage 2 validation loss curves for formula-conditioned and no-formula structure-only fine-tuning. \textbf  {b}, Direct greedy generation metrics. \textbf  {c}, Candidate-generation metrics after parsing, filtering, and reranking. \textbf  {d}, Key diagnostic numbers for the formula-conditioned direct and candidate settings. Formula conditioning improves several soft metrics, but exact structure recovery remains limited by formula compliance and candidate recall.}}{8}{figure.2}\protected@file@percent }
+\newlabel{fig:results}{{2}{8}{\textbf {Training and test-set outcomes.} \textbf {a}, Stage 2 validation loss curves for formula-conditioned and no-formula structure-only fine-tuning. \textbf {b}, Direct greedy generation metrics. \textbf {c}, Candidate-generation metrics after parsing, filtering, and reranking. \textbf {d}, Key diagnostic numbers for the formula-conditioned direct and candidate settings. Formula conditioning improves several soft metrics, but exact structure recovery remains limited by formula compliance and candidate recall}{figure.2}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.3}Candidate generation and reranking}{8}{subsection.5.3}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {3}{\ignorespaces Top-32 candidate inference. Oracle@32 measures whether the reference structure appears in the selectable candidate set after parsing, canonicalization, and filtering.}}{9}{table.3}\protected@file@percent }
+\newlabel{tab:candidates}{{3}{9}{Top-32 candidate inference. Oracle@32 measures whether the reference structure appears in the selectable candidate set after parsing, canonicalization, and filtering}{table.3}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {3}{\ignorespaces \textbf  {Candidate-generation bottleneck.} \textbf  {a}, Mean candidate counts through parsing, domain filtering, formula filtering, and reference-presence checks. Formula filtering removes most sampled structures; the correct reference appears in the selectable formula-conditioned set for only 0.5\% of test examples. \textbf  {b}, Practical implication: the present bottleneck is recall of formula-valid candidates, not the reranker.}}{9}{figure.3}\protected@file@percent }
+\newlabel{fig:candidate-bottleneck}{{3}{9}{\textbf {Candidate-generation bottleneck.} \textbf {a}, Mean candidate counts through parsing, domain filtering, formula filtering, and reference-presence checks. Formula filtering removes most sampled structures; the correct reference appears in the selectable formula-conditioned set for only 0.5\% of test examples. \textbf {b}, Practical implication: the present bottleneck is recall of formula-valid candidates, not the reranker}{figure.3}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.4}Interpretation of model behavior}{9}{subsection.5.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.5}Why the final study is text-only}{10}{subsection.5.5}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {6}Discussion}{10}{section.6}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.1}What the model has learned}{10}{subsection.6.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.2}Why formula conditioning helps but does not solve the task}{10}{subsection.6.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.3}Implications for future systems}{11}{subsection.6.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {7}Limitations}{11}{section.7}\protected@file@percent }
+\bibcite{Alberts2023}{1}
+\bibcite{Alberts2025}{2}
+\bibcite{Bemis1996}{3}
+\bibcite{Breitmaier2002}{4}
+\bibcite{Claridge2016}{5}
+\bibcite{Dettmers2023QLoRA}{6}
+\bibcite{Devata2024}{7}
+\bibcite{Ernst1987}{8}
+\bibcite{Hu2021LoRA}{9}
+\@writefile{toc}{\contentsline {section}{\numberline {8}Conclusion}{12}{section.8}\protected@file@percent }
+\bibcite{Hu2024}{10}
+\bibcite{Huang2021}{11}
+\bibcite{Jin2026}{12}
+\bibcite{Kingma2015}{13}
+\bibcite{Levitt2008}{14}
+\bibcite{Liu2025}{15}
+\bibcite{Loshchilov2019}{16}
+\bibcite{Mangrulkar2022}{17}
+\bibcite{Morgan1965}{18}
+\bibcite{Paszke2019}{19}
+\bibcite{Pretsch2009}{20}
+\bibcite{QwenTeam2025}{21}
+\bibcite{RDKit}{22}
+\bibcite{Rogers2010}{23}
+\bibcite{Silverstein2014}{24}
+\bibcite{Sridharan2022}{25}
+\bibcite{Tanimoto1958}{26}
+\bibcite{Vaswani2017}{27}
+\bibcite{VonWerra2020}{28}
+\bibcite{Weininger1988}{29}
+\bibcite{Wolf2020}{30}
+\bibcite{Xiong2025}{31}
+\bibcite{Yang2025}{32}
+\bibcite{Yang2026}{33}
+\bibcite{Yao2023}{34}
+\gdef \@abspage@last{14}
