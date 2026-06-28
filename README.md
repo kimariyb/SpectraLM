@@ -7,6 +7,8 @@ the active question is whether a Qwen3-8B text LLM can learn useful
 NMR-to-structure mappings, especially when an explicit molecular formula is
 available.
 
+![workflow](./paper/figures/fig1_workflow.png)
+
 ## Current Research State
 
 The active architecture is:
