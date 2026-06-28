@@ -26,19 +26,22 @@ constraint-aware candidate generation improves direct generation.
        NMR rules + candidate reranking
 ```
 
-The previous image-based path is intentionally removed. Generated spectrum
-images are not part of the current research claim.
+The previous spectrum-image path is intentionally removed. The current research
+claim is based only on structured peak-table inputs.
 
-## Main Claims
+## Working Hypotheses and Current Findings
 
-1. A text LLM can be instruction tuned to perform direct NMR peak-table to
-   connectivity-SMILES prediction within a controlled molecular domain.
+1. A text LLM can be instruction tuned to produce valid molecular strings and
+   learn partial NMR-to-functional-group associations within a controlled
+   molecular domain.
 2. Molecular formula conditioning is a major information source and must be
    evaluated separately from the no-formula setting.
-3. Top-k candidate generation with validity filtering, formula hard constraints,
-   rule pre-ranking, and model-based reranking is a stronger system than greedy
-   direct SMILES generation.
-4. One-dimensional NMR is not always uniquely identifying; candidate oracle,
+3. Prompt-only formula conditioning is insufficient; formula must also be
+   enforced as a hard post-generation constraint.
+4. Top-k candidate generation is useful only if candidate oracle@k is high
+   enough. The current 10k pilot shows that candidate recall is the bottleneck,
+   not reranking quality.
+5. One-dimensional NMR is not always uniquely identifying; candidate oracle,
    constraint failure, and ranking failure are first-class outcomes.
 
 ## Data Scope
@@ -102,4 +105,4 @@ Behavior metrics:
 4. Train formula-conditioned Stage 1 and Stage 2.
 5. Evaluate direct and candidate inference.
 6. Repeat the same path for the no-formula ablation.
-7. Use the results to decide whether to scale from 10k to 50k.
+7. Improve formula-valid candidate recall before scaling from 10k to 50k.

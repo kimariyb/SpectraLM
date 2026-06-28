@@ -473,9 +473,9 @@ non-exchangeable coupling evidence.
 ### 14.6 Confusing benchmark cleanliness with experimental cleanliness
 
 Failure: concluding that no impurities or solvent are present because their
-peaks are absent from the generated image.
+peaks are absent from the generated benchmark peak tables.
 
-Correction: the rendering pipeline omits them by design.
+Correction: the synthetic/normalized benchmark pipeline omits them by design.
 
 ## 15. Worked Example: Ethanol-Like Pattern
 
@@ -566,7 +566,7 @@ In a paper or technical report:
 - report Exact Match, valid SMILES rate, molecular-formula accuracy, Tanimoto,
   scaffold match with coverage, functional-group F1, and spectral consistency;
 - report output-format compliance, illegal-structure rate, and non-SMILES rate;
-- state that the benchmark images omit solvent and impurity peaks;
+- state that the benchmark peak tables omit solvent and impurity peaks;
 - do not claim complete manual structure elucidation capability from 1D data
   alone.
 

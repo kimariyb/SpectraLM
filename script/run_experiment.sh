@@ -40,7 +40,7 @@ case "${stage}:${run_name}" in
       --test-fraction 0.1 \
       --prefix clean \
       --seed 3407 \
-      --max-heavy-atoms 60 \
+      --max-heavy-atoms 35 \
       --max-h-peaks 80 \
       --max-c-peaks 120 \
       --solvent-policy any ;;

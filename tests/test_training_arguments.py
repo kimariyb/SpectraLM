@@ -79,7 +79,7 @@ def test_visual_collator_builder_is_removed() -> None:
 
 
 def test_legacy_visual_config_is_rejected() -> None:
-    """Old VLM YAML fields should fail before model loading."""
+    """Old image-workflow YAML fields should fail before model loading."""
     reject = getattr(_training_arguments_module(), "reject_legacy_visual_config")
 
     with pytest.raises(ValueError, match="image_backend"):

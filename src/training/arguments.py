@@ -37,7 +37,7 @@ LEGACY_VISUAL_CONFIG_KEYS = {
 
 
 def reject_legacy_visual_config(config: dict[str, Any]) -> None:
-    """Reject fields from the removed VLM/image workflow."""
+    """Reject fields from the removed image workflow."""
     present = sorted(key for key in LEGACY_VISUAL_CONFIG_KEYS if key in config)
     if present:
         raise ValueError(
